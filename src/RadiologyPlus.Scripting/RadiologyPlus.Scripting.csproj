@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RadiologyPlus.Scripting</RootNamespace>
+    <Description>Script execution engine: T-SQL, PL/pgSQL, PowerShell, Batch executors with Cronos scheduling and tenant-aware contexts.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="6.1.1" />
+    <PackageReference Include="Microsoft.PowerShell.SDK" Version="7.4.6" />
+    <PackageReference Include="Cronos" Version="0.10.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RadiologyPlus.Core\RadiologyPlus.Core.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Common\RadiologyPlus.Common.csproj" />
+  </ItemGroup>
+</Project>

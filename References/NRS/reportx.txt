@@ -1,0 +1,1 @@
+update pacs.studies as s set has_report='t' from ris.order_procedures as op, ris.reports r where s.study_uid = op.study_uid and op.procedure_id = r.procedure_id and s.has_report='f' and r.report_type='TEXT'  

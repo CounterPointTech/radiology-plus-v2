@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RadiologyPlus.Data</RootNamespace>
+    <Description>Postgres repositories, per-tenant Novarad connection pool, dual-write audit (INovaradWriter).</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Npgsql" Version="9.0.2" />
+    <PackageReference Include="Npgsql.NodaTime" Version="9.0.2" />
+    <PackageReference Include="NodaTime" Version="3.2.1" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.0" />
+    <PackageReference Include="BCrypt.Net-Next" Version="4.0.3" />
+    <PackageReference Include="ClosedXML" Version="0.105.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RadiologyPlus.Core\RadiologyPlus.Core.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Common\RadiologyPlus.Common.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Scripting\RadiologyPlus.Scripting.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Notifications\RadiologyPlus.Notifications.csproj" />
+  </ItemGroup>
+</Project>

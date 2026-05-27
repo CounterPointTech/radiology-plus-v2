@@ -1,0 +1,4 @@
+UPDATE pacs.studies
+SET priority = 0
+WHERE (priority = 3 OR priority = 4)
+AND study_date BETWEEN NOW() - INTERVAL '14 DAY' AND NOW();

@@ -1,0 +1,5 @@
+UPDATE ris.orders o
+SET patient_complaint = s.custom_6
+FROM pacs.studies s
+WHERE o.accession_number = s.accession
+AND s.study_date >= NOW() - INTERVAL '14 days';

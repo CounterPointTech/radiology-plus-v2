@@ -1,0 +1,49 @@
+# .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.suo
+*.swp
+TestResults/
+artifacts/
+.vs/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+*.log
+.pnpm-debug.log*
+.yarn/
+
+# Secrets
+*.pfx
+secrets.json
+appsettings.Development.json
+appsettings.Local.json
+.env
+.env.local
+.env.development.local
+.env.production.local
+
+# IDE
+.idea/
+*.iml
+.vscode/launch.json
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local
+
+# Claude Code session state — contains real dev secrets (DB password, JWT
+# secret, encryption key) and personal session notes. Keep on disk only.
+.claude/
+
+# v2.0 prototype — 1.4 GB of read-only reference material; not part of the
+# active codebase, and changes shouldn't track here.
+References/Projects/

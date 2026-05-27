@@ -1,0 +1,13 @@
+UPDATE pacs.studies s
+SET custom_6 = date_trunc('second', COALESCE(
+    (
+        SELECT se.modified_date
+        FROM pacs.series se
+        WHERE se.study = s.id
+          AND se.type <= 1
+        ORDER BY se.modified_date DESC
+        LIMIT 1
+    ), 
+    s.last_image_processed_date
+))
+WHERE s.study_date >= NOW() - INTERVAL '60 days';	

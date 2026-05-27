@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NU1510: harmless "package will not be pruned" notice on overrides.
+         NU1903: advisories on transitive packages we can't immediately replace; surfaced as warnings, not errors.
+         CA1848 / CA1873: LoggerMessage source-gen perf optimization; informational, not reliability-critical.
+         CA2007: ConfigureAwait(false) — not applicable to ASP.NET Core 10+ which has no sync context. -->
+    <WarningsNotAsErrors>CS1591;NU1510;NU1903;CA1848;CA1873;CA2007</WarningsNotAsErrors>
+    <NuGetAuditMode>direct</NuGetAuditMode>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <Company>NovaRad / iPro</Company>
+    <Product>Radiology Plus</Product>
+    <Authors>NovaRad / iPro</Authors>
+    <Copyright>Copyright (c) NovaRad / iPro</Copyright>
+    <Version>2.1.0</Version>
+  </PropertyGroup>
+</Project>
