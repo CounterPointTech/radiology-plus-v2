@@ -22,6 +22,7 @@ import { useAuth } from "@/lib/auth-context";
 import {
   canAccessBilling,
   type ReconciliationDetailRow,
+  type ReconciliationFacilitySummary,
   type ReconciliationLineItem,
   type ReconciliationRun,
   type ReportContent,
@@ -313,6 +314,9 @@ function ResultView({ run }: { run: ReconciliationRun }) {
   return (
     <>
       <RunSummary run={run} />
+      {run.facilitySummaries && run.facilitySummaries.length > 0 ? (
+        <FacilitySummaryPanel summaries={run.facilitySummaries} />
+      ) : null}
       {run.notes.length > 0 ? <NotesPanel notes={run.notes} /> : null}
 
       {run.lineItems.length === 0 ? (
@@ -478,6 +482,11 @@ function RunSummary({ run }: { run: ReconciliationRun }) {
             value={run.totalWorkRvu.toFixed(2)}
             mono
           />
+          <Stat
+            label="STAT reports"
+            value={run.statReportCount.toString()}
+            accent
+          />
         </div>
         <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
           Generated {formatDateTime(run.generatedAt)}
@@ -491,20 +500,89 @@ function Stat({
   label,
   value,
   mono = false,
+  accent = false,
 }: {
   label: string;
   value: string;
   mono?: boolean;
+  accent?: boolean;
 }) {
   return (
     <div className="flex flex-col">
       <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
         {label}
       </span>
-      <span className={mono ? "font-mono text-lg tabular-nums" : "text-lg"}>
+      <span
+        className={[
+          "text-lg",
+          mono ? "font-mono tabular-nums" : "",
+          accent ? "text-[color:var(--color-accent)] font-medium" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
         {value}
       </span>
     </div>
+  );
+}
+
+// Per-facility STAT subtotal. Accent (cyan), never red — STAT is attention-
+// drawing, not an error state. Subtotals reconcile to the run totals.
+function FacilitySummaryPanel({
+  summaries,
+}: {
+  summaries: ReconciliationFacilitySummary[];
+}) {
+  const totalReports = summaries.reduce((a, s) => a + s.totalReports, 0);
+  const totalStat = summaries.reduce((a, s) => a + s.statReportCount, 0);
+  return (
+    <section className="mb-4 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-surface)] overflow-hidden">
+      <header className="px-4 py-3 bg-[color:var(--color-surface-2)] border-b border-[color:var(--color-border)] flex items-baseline justify-between gap-x-4">
+        <h2 className="text-sm font-medium">By facility</h2>
+        <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+          STAT subtotal
+        </span>
+      </header>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead className="text-left text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)] bg-[color:var(--color-surface-2)]/50">
+            <tr>
+              <th className="px-4 py-2.5 font-medium">Facility</th>
+              <th className="px-4 py-2.5 font-medium text-right w-28">Reports</th>
+              <th className="px-4 py-2.5 font-medium text-right w-28">STAT</th>
+            </tr>
+          </thead>
+          <tbody>
+            {summaries.map((s) => (
+              <tr
+                key={s.siteCode}
+                className="border-t border-[color:var(--color-border)]"
+              >
+                <td className="px-4 py-2 font-mono text-xs">{s.siteCode}</td>
+                <td className="px-4 py-2 font-mono text-right tabular-nums">
+                  {s.totalReports}
+                </td>
+                <td className="px-4 py-2 font-mono text-right tabular-nums font-medium text-[color:var(--color-accent)]">
+                  {s.statReportCount}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-[color:var(--color-border)] bg-[color:var(--color-surface-2)]/40">
+              <td className="px-4 py-2 text-xs font-medium">All facilities</td>
+              <td className="px-4 py-2 font-mono text-right tabular-nums font-medium">
+                {totalReports}
+              </td>
+              <td className="px-4 py-2 font-mono text-right tabular-nums font-medium text-[color:var(--color-accent)]">
+                {totalStat}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </section>
   );
 }
 

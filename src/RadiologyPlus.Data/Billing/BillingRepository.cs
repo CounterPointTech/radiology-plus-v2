@@ -368,6 +368,12 @@ public sealed class BillingRepository : IBillingRepository
         int totalRads    = aggregated.Select(a => a.NovaradPhysicianId).Distinct().Count();
         decimal totalRvu = aggregated.Sum(a => a.WorkRvuTotal);
 
+        // 4b. Per-facility subtotals + run-level STAT count (distinct credited
+        //     reports flagged STAT). Computed over the same credited population as
+        //     totalReports, so the per-facility subtotals reconcile to the run total.
+        var (facilitySummaries, statReportCount) = BuildFacilityRollups(
+            aggregated.Select(a => (a.SiteCode, a.FacilityId, a.ReportIds, a.StatReportIds)));
+
         // 5. Insert run header.
         long runId;
         DateTimeOffset generatedAt;
@@ -377,9 +383,10 @@ public sealed class BillingRepository : IBillingRepository
             insertRun.CommandText = """
                 INSERT INTO billing.reconciliation_runs
                     (tenant_id, period_start, period_end, facility_id, run_kind,
-                     total_reports, total_radiologists, total_work_rvu, notes,
-                     generated_by_user_id)
-                VALUES (@t, @ps, @pe, @fac, @kind, @reports, @rads, @rvu, @notes::jsonb, @user)
+                     total_reports, total_radiologists, total_work_rvu, stat_report_count,
+                     notes, generated_by_user_id)
+                VALUES (@t, @ps, @pe, @fac, @kind, @reports, @rads, @rvu, @stat,
+                        @notes::jsonb, @user)
                 RETURNING run_id, generated_at
                 """;
             insertRun.Parameters.AddWithValue("t", tenantId);
@@ -390,6 +397,7 @@ public sealed class BillingRepository : IBillingRepository
             insertRun.Parameters.AddWithValue("reports", totalReports);
             insertRun.Parameters.AddWithValue("rads", totalRads);
             insertRun.Parameters.AddWithValue("rvu", totalRvu);
+            insertRun.Parameters.AddWithValue("stat", statReportCount);
             insertRun.Parameters.AddWithValue("notes", JsonSerializer.Serialize(notes));
             insertRun.Parameters.AddWithValue("user", runByUserId);
             await using var rdr = await insertRun.ExecuteReaderAsync(cancellationToken);
@@ -412,9 +420,11 @@ public sealed class BillingRepository : IBillingRepository
                     (run_id, tenant_id, novarad_physician_id, physician_display_name,
                      site_code, facility_id, cpt_code, cpt_description,
                      report_count, units, work_rvu_per_unit, work_rvu_total,
-                     novarad_rvu_work, rvu_mismatch, novarad_report_ids)
+                     novarad_rvu_work, rvu_mismatch, novarad_report_ids,
+                     novarad_stat_report_ids)
                 VALUES (@run, @t, @phys, @phys_name, @site, @fac, @cpt, @desc,
-                        @reports, @units, @rvu_per, @rvu_total, @nv_rvu, @mismatch, @rids)
+                        @reports, @units, @rvu_per, @rvu_total, @nv_rvu, @mismatch, @rids,
+                        @stat_rids)
                 RETURNING line_id
                 """;
             insertLine.Parameters.Add(new NpgsqlParameter("run", NpgsqlDbType.Bigint));
@@ -432,6 +442,7 @@ public sealed class BillingRepository : IBillingRepository
             insertLine.Parameters.Add(new NpgsqlParameter("nv_rvu", NpgsqlDbType.Numeric));
             insertLine.Parameters.Add(new NpgsqlParameter("mismatch", NpgsqlDbType.Boolean));
             insertLine.Parameters.Add(new NpgsqlParameter("rids", NpgsqlDbType.Array | NpgsqlDbType.Bigint));
+            insertLine.Parameters.Add(new NpgsqlParameter("stat_rids", NpgsqlDbType.Array | NpgsqlDbType.Bigint));
             await insertLine.PrepareAsync(cancellationToken);
 
             foreach (var agg in aggregated)
@@ -451,6 +462,7 @@ public sealed class BillingRepository : IBillingRepository
                 insertLine.Parameters["nv_rvu"].Value    = (object?)agg.NovaradRvuWork ?? DBNull.Value;
                 insertLine.Parameters["mismatch"].Value  = agg.RvuMismatch;
                 insertLine.Parameters["rids"].Value      = agg.ReportIds.ToArray();
+                insertLine.Parameters["stat_rids"].Value = agg.StatReportIds.ToArray();
                 var lineIdObj = await insertLine.ExecuteScalarAsync(cancellationToken)
                     ?? throw new InvalidOperationException("INSERT reconciliation_line_items did not return line_id.");
                 var lineId = (long)lineIdObj;
@@ -502,8 +514,10 @@ public sealed class BillingRepository : IBillingRepository
             TotalReports: totalReports,
             TotalRadiologists: totalRads,
             TotalWorkRvu: totalRvu,
+            StatReportCount: statReportCount,
             LineItems: persisted,
             Notes: notes,
+            FacilitySummaries: facilitySummaries,
             GeneratedByUserId: runByUserId,
             GeneratedAt: generatedAt);
     }
@@ -1026,7 +1040,7 @@ public sealed class BillingRepository : IBillingRepository
             cmd.CommandText = """
                 SELECT run_id, period_start, period_end, facility_id, run_kind,
                        total_reports, total_radiologists, total_work_rvu, notes::text,
-                       generated_by_user_id, generated_at
+                       generated_by_user_id, generated_at, stat_report_count
                 FROM billing.reconciliation_runs
                 WHERE tenant_id = @t AND run_id = @r
                 LIMIT 1
@@ -1049,21 +1063,27 @@ public sealed class BillingRepository : IBillingRepository
                 TotalReports: rdr.GetInt32(5),
                 TotalRadiologists: rdr.GetInt32(6),
                 TotalWorkRvu: rdr.GetDecimal(7),
+                StatReportCount: rdr.GetInt32(11),
                 LineItems: Array.Empty<ReconciliationLineItem>(),
                 Notes: notes,
+                FacilitySummaries: Array.Empty<ReconciliationFacilitySummary>(),
                 GeneratedByUserId: rdr.GetGuid(9),
                 GeneratedAt: new DateTimeOffset(rdr.GetDateTime(10), TimeSpan.Zero));
         }
 
-        // 2. Line items in display order (physician name, then CPT).
+        // 2. Line items in display order (physician name, then CPT). Also collect
+        //    the (site, facility, reports, stat-reports) tuples so the per-facility
+        //    STAT subtotals can be rebuilt for the export without a separate table.
         var lines = new List<ReconciliationLineItem>();
+        var rollupInputs = new List<(string SiteCode, long? FacilityId, IReadOnlyList<long> ReportIds, IReadOnlyList<long> StatReportIds)>();
         await using (var cmd = conn.CreateCommand())
         {
             cmd.CommandText = """
                 SELECT line_id, novarad_physician_id, physician_display_name,
                        site_code, facility_id, cpt_code, cpt_description,
                        report_count, units, work_rvu_per_unit, work_rvu_total,
-                       novarad_rvu_work, rvu_mismatch, novarad_report_ids
+                       novarad_rvu_work, rvu_mismatch, novarad_report_ids,
+                       novarad_stat_report_ids
                 FROM billing.reconciliation_line_items
                 WHERE tenant_id = @t AND run_id = @r
                 ORDER BY physician_display_name, cpt_code
@@ -1073,12 +1093,17 @@ public sealed class BillingRepository : IBillingRepository
             await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
             while (await rdr.ReadAsync(cancellationToken))
             {
+                var siteCode = rdr.GetString(3);
+                long? facilityId = rdr.IsDBNull(4) ? null : rdr.GetInt64(4);
+                var reportIds = rdr.IsDBNull(13) ? Array.Empty<long>() : ((long[])rdr.GetValue(13)).ToArray();
+                var statIds   = rdr.IsDBNull(14) ? Array.Empty<long>() : ((long[])rdr.GetValue(14)).ToArray();
+                rollupInputs.Add((siteCode, facilityId, reportIds, statIds));
                 lines.Add(new ReconciliationLineItem(
                     LineId: rdr.GetInt64(0),
                     NovaradPhysicianId: rdr.GetInt64(1),
                     PhysicianDisplayName: rdr.GetString(2),
-                    SiteCode: rdr.GetString(3),
-                    FacilityId: rdr.IsDBNull(4) ? null : rdr.GetInt64(4),
+                    SiteCode: siteCode,
+                    FacilityId: facilityId,
                     CptCode: rdr.GetString(5),
                     CptDescription: rdr.IsDBNull(6) ? null : rdr.GetString(6),
                     ReportCount: rdr.GetInt32(7),
@@ -1087,11 +1112,12 @@ public sealed class BillingRepository : IBillingRepository
                     WorkRvuTotal: rdr.GetDecimal(10),
                     NovaradRvuWork: rdr.IsDBNull(11) ? null : rdr.GetDecimal(11),
                     RvuMismatch: rdr.GetBoolean(12),
-                    NovaradReportIds: rdr.IsDBNull(13) ? Array.Empty<long>() : ((long[])rdr.GetValue(13)).ToArray()));
+                    NovaradReportIds: reportIds));
             }
         }
 
-        return header with { LineItems = lines };
+        var (facilitySummaries, _) = BuildFacilityRollups(rollupInputs);
+        return header with { LineItems = lines, FacilitySummaries = facilitySummaries };
     }
 
     private static async Task<MasterIndex> LoadMasterForYearsAsync(
@@ -1207,6 +1233,13 @@ public sealed class BillingRepository : IBillingRepository
     {
         var notes = new List<ReconciliationNote>();
         var emissions = new List<CreditEmission>();
+
+        // Report-level STAT flag (ris.order_procedures.stat_flag, constant across a
+        // report's service lines). Used to tag each aggregated line's contributing
+        // reports so the per-facility STAT subtotal can de-duplicate by report.
+        var statReportIds = new HashSet<long>();
+        foreach (var s in source)
+            if (s.IsStat) statReportIds.Add(s.ReportId);
 
         // Raw (normalized) service_codes that fired through the crosswalk this
         // run. Returned to the caller so reconciliation can bump applied_count /
@@ -1342,6 +1375,7 @@ public sealed class BillingRepository : IBillingRepository
                 var rvuPerUnit = first.WorkRvuPerUnit;
                 var rvuTotal   = unitsTotal * rvuPerUnit;
                 var reportIds  = rows.Select(r => r.ReportId).Distinct().OrderBy(x => x).ToArray();
+                var statIds    = reportIds.Where(statReportIds.Contains).ToArray();
 
                 // If Novarad shows multiple distinct non-null RVUs for the same
                 // singleton CPT within this run, that's a Novarad-side data drift —
@@ -1369,7 +1403,8 @@ public sealed class BillingRepository : IBillingRepository
                     WorkRvuTotal: rvuTotal,
                     NovaradRvuWork: novaradRvu,
                     RvuMismatch: mismatch,
-                    ReportIds: reportIds);
+                    ReportIds: reportIds,
+                    StatReportIds: statIds);
             })
             .OrderBy(a => a.PhysicianDisplayName)
             .ThenBy(a => a.SiteCode)
@@ -1448,5 +1483,43 @@ public sealed class BillingRepository : IBillingRepository
         decimal WorkRvuTotal,
         decimal? NovaradRvuWork,
         bool RvuMismatch,
-        IReadOnlyList<long> ReportIds);
+        IReadOnlyList<long> ReportIds,
+        IReadOnlyList<long> StatReportIds);
+
+    // Roll per-line (site, facility, reports, stat-reports) up to per-facility
+    // subtotals + the run-level STAT count. Reports de-duplicate within a facility
+    // (a report spanning multiple CPTs counts once) and across facilities for the
+    // run total, so the subtotals reconcile to the run total.
+    private static (IReadOnlyList<ReconciliationFacilitySummary> Summaries, int StatReportCount) BuildFacilityRollups(
+        IEnumerable<(string SiteCode, long? FacilityId, IReadOnlyList<long> ReportIds, IReadOnlyList<long> StatReportIds)> lines)
+    {
+        var bySite = new Dictionary<string, (long? FacilityId, HashSet<long> Reports, HashSet<long> Stat)>(
+            StringComparer.OrdinalIgnoreCase);
+        var allStat = new HashSet<long>();
+
+        foreach (var (site, facilityId, reportIds, statIds) in lines)
+        {
+            if (!bySite.TryGetValue(site, out var entry))
+                entry = (facilityId, new HashSet<long>(), new HashSet<long>());
+            else if (entry.FacilityId is null && facilityId is not null)
+                entry = (facilityId, entry.Reports, entry.Stat);   // backfill facility_id if a later line resolved it
+
+            foreach (var rid in reportIds) entry.Reports.Add(rid);
+            foreach (var rid in statIds) { entry.Stat.Add(rid); allStat.Add(rid); }
+            bySite[site] = entry;
+        }
+
+        var summaries = bySite
+            .Select(kv => new ReconciliationFacilitySummary(
+                FacilityId:      kv.Value.FacilityId,
+                SiteCode:        kv.Key,
+                TotalReports:    kv.Value.Reports.Count,
+                StatReportCount: kv.Value.Stat.Count))
+            .OrderByDescending(f => f.StatReportCount)
+            .ThenByDescending(f => f.TotalReports)
+            .ThenBy(f => f.SiteCode, StringComparer.Ordinal)
+            .ToList();
+
+        return (summaries, allStat.Count);
+    }
 }

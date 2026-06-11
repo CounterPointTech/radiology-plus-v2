@@ -99,6 +99,15 @@ export interface ReconciliationNote {
   message: string;
 }
 
+// Per-facility rollup for a run: distinct credited reports at that site and how
+// many were flagged STAT in Novarad. Subtotals reconcile to the run totals.
+export interface ReconciliationFacilitySummary {
+  facilityId: number | null;
+  siteCode: string;
+  totalReports: number;
+  statReportCount: number;
+}
+
 export interface ReconciliationRun {
   runId: number;
   periodStart: string;
@@ -108,8 +117,10 @@ export interface ReconciliationRun {
   totalReports: number;
   totalRadiologists: number;
   totalWorkRvu: number;
+  statReportCount: number;
   lineItems: ReconciliationLineItem[];
   notes: ReconciliationNote[];
+  facilitySummaries: ReconciliationFacilitySummary[];
   generatedByUserId: string;
   generatedAt: string;
 }

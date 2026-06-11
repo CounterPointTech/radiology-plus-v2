@@ -40,6 +40,7 @@ public sealed class ReconciliationExporter : IReconciliationExporter
 
         using var wb = new XLWorkbook();
         BuildSummarySheet(wb, run, filters, filtered);
+        BuildFacilitySheet(wb, run);
         BuildLineItemsSheet(wb, filtered);
 
         using var ms = new MemoryStream();
@@ -83,6 +84,8 @@ public sealed class ReconciliationExporter : IReconciliationExporter
         ws.Cell(row, 1).Value = "Work RVU (run total)";
         ws.Cell(row, 2).Value = (double)run.TotalWorkRvu;
         ws.Cell(row++, 2).Style.NumberFormat.Format = "0.00";
+        ws.Cell(row, 1).Value = "STAT reports (run total)";
+        ws.Cell(row++, 2).Value = run.StatReportCount;
 
         row++;
         ws.Cell(row, 1).Value = "Filtered lines";
@@ -93,6 +96,40 @@ public sealed class ReconciliationExporter : IReconciliationExporter
 
         ws.Column(1).Width = 26;
         ws.Column(2).Width = 28;
+    }
+
+    private static void BuildFacilitySheet(XLWorkbook wb, ReconciliationRun run)
+    {
+        var ws = wb.Worksheets.Add("By facility");
+
+        var headers = new[] { "Site", "Facility ID", "Reports", "STAT reports" };
+        for (int i = 0; i < headers.Length; i++)
+        {
+            var cell = ws.Cell(1, i + 1);
+            cell.Value = headers[i];
+            cell.Style.Font.Bold = true;
+            cell.Style.Font.FontColor = HeaderFg;
+            cell.Style.Fill.BackgroundColor = HeaderFill;
+        }
+
+        int r = 2;
+        foreach (var f in run.FacilitySummaries)
+        {
+            ws.Cell(r, 1).Value = f.SiteCode;
+            if (f.FacilityId.HasValue) ws.Cell(r, 2).Value = f.FacilityId.Value;
+            ws.Cell(r, 3).Value = f.TotalReports;
+            ws.Cell(r, 4).Value = f.StatReportCount;
+            r++;
+        }
+
+        // Run-total row — facility subtotals reconcile to these.
+        ws.Cell(r, 1).Value = "All facilities";
+        ws.Cell(r, 3).Value = run.TotalReports;
+        ws.Cell(r, 4).Value = run.StatReportCount;
+        ws.Range(r, 1, r, headers.Length).Style.Font.Bold = true;
+
+        ws.SheetView.FreezeRows(1);
+        ws.Columns(1, headers.Length).AdjustToContents();
     }
 
     private static void BuildLineItemsSheet(XLWorkbook wb, IReadOnlyList<ReconciliationLineItem> rows)

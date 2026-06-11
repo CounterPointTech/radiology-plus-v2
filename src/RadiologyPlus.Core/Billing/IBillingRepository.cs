@@ -206,10 +206,24 @@ public sealed record ReconciliationRun(
     int TotalReports,
     int TotalRadiologists,
     decimal TotalWorkRvu,
+    int StatReportCount,                                    // distinct credited reports flagged STAT in Novarad
     IReadOnlyList<ReconciliationLineItem> LineItems,
     IReadOnlyList<ReconciliationNote> Notes,
+    IReadOnlyList<ReconciliationFacilitySummary> FacilitySummaries,
     Guid GeneratedByUserId,
     DateTimeOffset GeneratedAt);
+
+/// <summary>
+/// Per-facility rollup for a reconciliation run: distinct signed reports credited
+/// at that site, and how many of them were flagged STAT in Novarad
+/// (<c>ris.order_procedures.stat_flag</c>). Computed over the same credited
+/// population as the run totals, so the per-facility subtotals reconcile.
+/// </summary>
+public sealed record ReconciliationFacilitySummary(
+    long? FacilityId,
+    string SiteCode,
+    int TotalReports,
+    int StatReportCount);
 
 /// <summary>
 /// One per-(physician × site × CPT-or-bundle) credit line.

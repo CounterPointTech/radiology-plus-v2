@@ -81,4 +81,7 @@ public sealed record SignedProcedureLineItem(
     string CptCode,
     decimal Units,
     string? CptDescription,
-    decimal? NovaradRvuWork);
+    decimal? NovaradRvuWork,
+    // ris.order_procedures.stat_flag — the procedure was ordered STAT. Constant
+    // across a report's service lines (a report maps to one procedure).
+    bool IsStat);

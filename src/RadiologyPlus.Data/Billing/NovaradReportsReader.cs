@@ -115,7 +115,8 @@ public sealed class NovaradReportsReader : INovaradReportsReader
                 bsc.service_code AS cpt_code,
                 COALESCE(sl.units, 1)::numeric(10,2) AS units,
                 bsc.description AS cpt_description,
-                bsc.rvu_work AS novarad_rvu_work
+                bsc.rvu_work AS novarad_rvu_work,
+                op.stat_flag AS stat_flag
             FROM ris.reports r
             JOIN ris.order_procedures op              ON op.procedure_id = r.procedure_id
             JOIN ris.orders o                         ON o.order_id      = op.order_id
@@ -151,7 +152,8 @@ public sealed class NovaradReportsReader : INovaradReportsReader
                 CptCode:              reader.GetString(6),
                 Units:                reader.GetDecimal(7),
                 CptDescription:       reader.IsDBNull(8) ? null : reader.GetString(8),
-                NovaradRvuWork:       reader.IsDBNull(9) ? null : reader.GetDecimal(9)));
+                NovaradRvuWork:       reader.IsDBNull(9) ? null : reader.GetDecimal(9),
+                IsStat:               !reader.IsDBNull(10) && reader.GetBoolean(10)));
         }
         return result;
     }
