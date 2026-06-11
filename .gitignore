@@ -47,3 +47,6 @@ desktop.ini
 # v2.0 prototype — 1.4 GB of read-only reference material; not part of the
 # active codebase, and changes shouldn't track here.
 References/Projects/
+
+# M*Modal / vendor DB schemas — third-party reference material, keep local only.
+References/DB Schemas/
