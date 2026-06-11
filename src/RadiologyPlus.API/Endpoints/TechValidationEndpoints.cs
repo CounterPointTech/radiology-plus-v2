@@ -22,6 +22,7 @@ public static class TechValidationEndpoints
         group.MapPost("/{validationId:guid}/step/{step:int}", UpdateStepAsync).WithName("TechUpdateStep");
         group.MapGet("/orders/by-patient/{patientPid}", GetCandidateOrdersAsync).WithName("TechCandidateOrders");
         group.MapGet("/comparisons/{novaradPatientId:long}", GetComparisonCandidatesAsync).WithName("TechComparisons");
+        group.MapGet("/jacket/{novaradPatientId:long}", GetPatientJacketAsync).WithName("TechPatientJacket");
         group.MapGet("/patients/search", GetPatientSearchAsync).WithName("TechPatientSearch");
         group.MapGet("/templates", GetTemplatesAsync).WithName("TechTemplates");
         group.MapPost("/templates", CreateTemplateAsync).WithName("TechTemplateCreate");
@@ -58,6 +59,12 @@ public static class TechValidationEndpoints
         {
             await repo.UpsertReadyStudiesAsync(user.TenantId, studies, ct);
         }
+        // Also prune rows the projector didn't touch this pass (studies that have
+        // moved past status=0 in PACS since they were last projected). The Service
+        // worker normally does this every poll; dev/refresh mirrors the behavior so
+        // the worklist stays clean even when the worker isn't running locally.
+        await repo.PruneStaleReadyStudiesAsync(
+            user.TenantId, DateTimeOffset.UtcNow.AddMinutes(-1), ct);
         return Results.Ok(new { projected = studies.Count, lookbackDays = window.TotalDays });
     }
 
@@ -120,7 +127,7 @@ public static class TechValidationEndpoints
     {
         var user = currentUser.Require();
         if (!user.Role.CanAccessTechValidation()) return Results.Forbid();
-        if (step is < 1 or > 5) return Results.BadRequest(new { error = "step must be 1..5" });
+        if (step is < 1 or > 6) return Results.BadRequest(new { error = "step must be 1..6" });
 
         await repo.UpdateStepAsync(
             user.TenantId, validationId, (WizardStep)step,
@@ -170,6 +177,25 @@ public static class TechValidationEndpoints
         var user = currentUser.Require();
         if (!user.Role.CanAccessTechValidation()) return Results.Forbid();
         var rows = await reader.ReadComparisonCandidatesAsync(novaradPatientId, lastName, limit ?? 25, ct);
+        return Results.Ok(rows);
+    }
+
+    [Authorize]
+    private static async Task<IResult> GetPatientJacketAsync(
+        long novaradPatientId,
+        [FromQuery] long currentStudyId,
+        [FromQuery] string? description,
+        [FromQuery] string? modality,
+        [FromQuery] int? limit,
+        ICurrentUser currentUser,
+        INovaradStudyReader reader,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessTechValidation()) return Results.Forbid();
+        var rows = await reader.ReadPatientJacketAsync(
+            novaradPatientId, currentStudyId, description, modality,
+            Math.Clamp(limit ?? 200, 1, 500), ct);
         return Results.Ok(rows);
     }
 

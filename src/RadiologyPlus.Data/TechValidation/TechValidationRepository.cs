@@ -30,7 +30,7 @@ public sealed class TechValidationRepository : ITechValidationRepository
                    w.last_image_processed_date, w.projected_at,
                    w.in_progress_validation_id, w.in_progress_status, w.in_progress_started_by,
                    COALESCE(u.display_name, u.username) AS in_progress_started_by_display,
-                   w.in_progress_started_at, w.patient_gender
+                   w.in_progress_started_at, w.patient_gender, w.study_description
             FROM tech_validation.vw_worklist w
             LEFT JOIN identity.users u ON u.user_id = w.in_progress_started_by
             WHERE w.tenant_id = @t {filterClause.Replace("facility_id", "w.facility_id")}
@@ -54,6 +54,7 @@ public sealed class TechValidationRepository : ITechValidationRepository
                 StudyDate: reader.IsDBNull(4) ? null : new DateTimeOffset(reader.GetDateTime(4), TimeSpan.Zero),
                 Modality: reader.IsDBNull(5) ? null : reader.GetString(5),
                 Custom3: reader.IsDBNull(6) ? null : reader.GetString(6),
+                StudyDescription: reader.IsDBNull(20) ? null : reader.GetString(20),
                 NovaradPatientId: reader.GetInt64(7),
                 PatientPid: reader.IsDBNull(8) ? null : reader.GetString(8),
                 PatientLastName: reader.IsDBNull(9) ? null : reader.GetString(9),
@@ -186,7 +187,7 @@ public sealed class TechValidationRepository : ITechValidationRepository
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             UPDATE tech_validation.validations
-            SET status = 4, completed_at = NOW(), current_step = 5
+            SET status = 4, completed_at = NOW(), current_step = 6
             WHERE validation_id = @v
             """;
         cmd.Parameters.AddWithValue("v", validationId);
@@ -322,10 +323,10 @@ public sealed class TechValidationRepository : ITechValidationRepository
                 INSERT INTO tech_validation.ready_studies
                     (tenant_id, novarad_study_id, facility_id, study_uid, accession, study_date, modality,
                      custom_3, novarad_patient_id, patient_pid, patient_last_name, patient_first_name,
-                     patient_birth_date, patient_gender, last_image_processed_date, projected_at)
+                     patient_birth_date, patient_gender, last_image_processed_date, study_description, projected_at)
                 VALUES (@t, @sid, @fac, @uid, @acc, @sdate, @mod,
                         @c3, @pid, @ppid, @plast, @pfirst,
-                        @pbirth, @pgender, @lipd, NOW())
+                        @pbirth, @pgender, @lipd, @sdesc, NOW())
                 ON CONFLICT (tenant_id, novarad_study_id) DO UPDATE SET
                     facility_id              = EXCLUDED.facility_id,
                     study_uid                = EXCLUDED.study_uid,
@@ -340,6 +341,7 @@ public sealed class TechValidationRepository : ITechValidationRepository
                     patient_birth_date       = EXCLUDED.patient_birth_date,
                     patient_gender           = EXCLUDED.patient_gender,
                     last_image_processed_date= EXCLUDED.last_image_processed_date,
+                    study_description        = EXCLUDED.study_description,
                     projected_at             = NOW()
                 """;
             cmd.Parameters.AddWithValue("t", tenantId);
@@ -360,6 +362,7 @@ public sealed class TechValidationRepository : ITechValidationRepository
                 Value = s.PatientBirthDate.HasValue ? s.PatientBirthDate.Value.ToDateTime(TimeOnly.MinValue) : DBNull.Value
             });
             cmd.Parameters.Add(NullableTimestamp("lipd", s.LastImageProcessedDate));
+            cmd.Parameters.Add(NullableText("sdesc", s.StudyDescription));
             await cmd.ExecuteNonQueryAsync(cancellationToken);
         }
     }

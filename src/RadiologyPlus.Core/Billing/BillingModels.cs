@@ -118,6 +118,29 @@ public sealed record BulkImportResult(
 /// pacs.studies.accession join can miss when the study row was never imaged or
 /// was soft-deleted.
 /// </summary>
+/// <summary>
+/// Full report content + the surrounding patient/study/signing metadata, used by the
+/// reconciliation drill-down's per-report viewer. <c>ReportFormat</c> mirrors Novarad's
+/// <c>ris.reports.report_format</c> ("HTML" | "TEXT" | "AUDIO" | "AUTOTEXT") so the UI
+/// can decide whether to render the body as HTML or as preformatted text.
+/// </summary>
+public sealed record ReportContent(
+    long ReportId,
+    DateTimeOffset? SignedAt,
+    long? SigningPhysicianId,
+    string? SigningPhysicianName,
+    string? Accession,
+    DateTimeOffset? StudyDate,
+    string? Modality,
+    long? NovaradPatientId,
+    string? PatientPid,
+    string? PatientLastName,
+    string? PatientFirstName,
+    DateOnly? PatientBirthDate,
+    string? PatientGender,
+    string? ReportFormat,
+    string? ReportText);
+
 public sealed record ReconciliationDetailRow(
     long ReportId,
     DateTimeOffset SignedAt,

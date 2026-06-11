@@ -42,6 +42,15 @@ public interface INovaradReportsReader
     Task<IReadOnlyList<ReconciliationDetailRow>> ReadReportDetailsAsync(
         IReadOnlyList<long> reportIds,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Pull the full report body + signing metadata + patient/study demographics for
+    /// a single Novarad report. Used by the reconciliation drill-down's inline report
+    /// viewer. Returns null when the report doesn't exist.
+    /// </summary>
+    Task<ReportContent?> ReadReportFullAsync(
+        long reportId,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

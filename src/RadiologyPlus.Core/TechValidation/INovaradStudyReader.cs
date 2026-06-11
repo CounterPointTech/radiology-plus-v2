@@ -39,4 +39,17 @@ public interface INovaradStudyReader
         string? lastNameFuzzy,
         int limit,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Pull the patient's full prior-study jacket for the wizard's Comparisons step. Excludes
+    /// the current study, scores priors by modality match + description similarity, and flags
+    /// the high-scoring ones as "suggested" so the UI can pin them at the top.
+    /// </summary>
+    Task<IReadOnlyList<PatientJacketEntry>> ReadPatientJacketAsync(
+        long novaradPatientId,
+        long currentStudyId,
+        string? currentDescription,
+        string? currentModality,
+        int limit = 200,
+        CancellationToken cancellationToken = default);
 }

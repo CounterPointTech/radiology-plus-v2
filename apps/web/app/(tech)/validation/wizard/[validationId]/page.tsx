@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogActions } from "@/components/ui/dialog";
 import { Spinner } from "@/components/ui/spinner";
+import { StepComparisons } from "@/components/wizard/step-comparisons";
 import { StepDoTheDo } from "@/components/wizard/step-do-the-do";
 import { StepIndicator } from "@/components/wizard/step-indicator";
 import { StepOrder } from "@/components/wizard/step-order";
@@ -40,10 +41,13 @@ const EMPTY_CORRECTION: CorrectionDraft = {
 const STEPS = [
   { index: 1, label: "Study" },
   { index: 2, label: "Order" },
-  { index: 3, label: "Reason" },
-  { index: 4, label: "Review" },
-  { index: 5, label: "Finalize" },
+  { index: 3, label: "Comparisons" },
+  { index: 4, label: "Reason" },
+  { index: 5, label: "Review" },
+  { index: 6, label: "Finalize" },
 ];
+
+type StepNum = 1 | 2 | 3 | 4 | 5 | 6;
 
 export default function WizardPage() {
   const params = useParams<{ validationId: string }>();
@@ -91,6 +95,7 @@ export default function WizardPage() {
     correction: CorrectionDraft;
     reassignTargetPatientId: number | null;
     reassignTarget: PatientSearchResult | null;
+    comparisonStudyIds: number[];
   } | null>(null);
 
   useEffect(() => {
@@ -110,20 +115,21 @@ export default function WizardPage() {
         },
         reassignTargetPatientId: validation.reassignTargetPatientId,
         reassignTarget: null,
+        comparisonStudyIds: validation.comparisonStudyIds ?? [],
       });
     }
   }, [validation, draft]);
 
-  const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
+  const [step, setStep] = useState<StepNum>(1);
   useEffect(() => {
     if (validation && step === 1 && validation.currentStep > 1) {
-      const next = Math.min(5, Math.max(1, validation.currentStep)) as 1 | 2 | 3 | 4 | 5;
+      const next = Math.min(6, Math.max(1, validation.currentStep)) as StepNum;
       setStep(next);
     }
   }, [validation, step]);
 
   const stepMutation = useMutation({
-    mutationFn: async (input: { target: 1 | 2 | 3 | 4 | 5; body: StepRequest }) => {
+    mutationFn: async (input: { target: StepNum; body: StepRequest }) => {
       return techApi.step(validationId, input.target, input.body);
     },
     onSuccess: (record) => {
@@ -133,7 +139,14 @@ export default function WizardPage() {
 
   const cancelMutation = useMutation({
     mutationFn: () => techApi.cancel(validationId),
-    onSuccess: () => router.push("/validation"),
+    onSuccess: () => {
+      // Drop the worklist cache so the "In progress · X" badge clears on the
+      // row the tech just abandoned — otherwise they land back on the list
+      // and see their own claim still showing until the next poll.
+      queryClient.invalidateQueries({ queryKey: ["worklist"] });
+      queryClient.invalidateQueries({ queryKey: ["validation", validationId] });
+      router.push("/validation");
+    },
   });
 
   const [finalizing, setFinalizing] = useState(false);
@@ -171,8 +184,8 @@ export default function WizardPage() {
   // ---- step handlers ----
 
   async function persistAndAdvance(
-    target: 1 | 2 | 3 | 4 | 5,
-    next: 1 | 2 | 3 | 4 | 5,
+    target: StepNum,
+    next: StepNum,
     body: StepRequest,
   ) {
     try {
@@ -239,7 +252,7 @@ export default function WizardPage() {
             className="text-2xl mt-1"
             style={{ fontFamily: "var(--font-display)" }}
           >
-            Step {step} of 5 · {STEPS[step - 1].label}
+            Step {step} of 6 · {STEPS[step - 1].label}
           </h1>
         </div>
         {!isTerminal ? (
@@ -260,7 +273,7 @@ export default function WizardPage() {
           current={step}
           reachable={Math.max(step, validation.currentStep)}
           onJump={(target) => {
-            if (!isTerminal) setStep(target as 1 | 2 | 3 | 4 | 5);
+            if (!isTerminal) setStep(target as StepNum);
           }}
         />
       </div>
@@ -362,14 +375,34 @@ export default function WizardPage() {
           ) : null}
 
           {step === 3 ? (
-            <StepReason
-              reason={draft.reason}
-              techNotes={draft.techNotes}
-              onChange={(next) => setDraft({ ...draft, ...next })}
+            <StepComparisons
+              novaradPatientId={
+                validation.novaradPatientId ?? studyForValidation?.novaradPatientId ?? null
+              }
+              currentStudyId={validation.novaradStudyId}
+              currentDescription={studyForValidation?.studyDescription ?? null}
+              currentModality={studyForValidation?.modality ?? null}
+              selectedIds={draft.comparisonStudyIds}
+              onChange={(ids) => setDraft({ ...draft, comparisonStudyIds: ids })}
               onBack={() => setStep(2)}
               saving={stepMutation.isPending}
               onContinue={() =>
                 persistAndAdvance(3, 4, {
+                  comparisonStudyIds: draft.comparisonStudyIds,
+                })
+              }
+            />
+          ) : null}
+
+          {step === 4 ? (
+            <StepReason
+              reason={draft.reason}
+              techNotes={draft.techNotes}
+              onChange={(next) => setDraft({ ...draft, ...next })}
+              onBack={() => setStep(3)}
+              saving={stepMutation.isPending}
+              onContinue={() =>
+                persistAndAdvance(4, 5, {
                   reason: draft.reason,
                   techNotes: draft.techNotes,
                 })
@@ -377,7 +410,7 @@ export default function WizardPage() {
             />
           ) : null}
 
-          {step === 4 ? (
+          {step === 5 ? (
             <StepReview
               study={studyForValidation}
               order={selectedOrder}
@@ -388,13 +421,13 @@ export default function WizardPage() {
               correction={draft.correction}
               reassignTarget={draft.reassignTarget}
               reassignTargetPatientId={draft.reassignTargetPatientId}
-              onBack={() => setStep(3)}
+              onBack={() => setStep(4)}
               saving={stepMutation.isPending}
-              onContinue={() => persistAndAdvance(4, 5, {})}
+              onContinue={() => persistAndAdvance(5, 6, {})}
             />
           ) : null}
 
-          {step === 5 ? (
+          {step === 6 ? (
             <StepDoTheDo
               validationId={validationId}
               finalizing={finalizing}
@@ -402,7 +435,7 @@ export default function WizardPage() {
               errorMessage={finalizeError}
               onStart={() => finalizeMutation.mutate()}
               onRetry={() => finalizeMutation.mutate()}
-              onBack={() => setStep(4)}
+              onBack={() => setStep(5)}
             />
           ) : null}
         </motion.div>

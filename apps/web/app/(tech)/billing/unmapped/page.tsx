@@ -6,6 +6,7 @@ import {
   AlertCircle,
   ChevronDown,
   ChevronRight,
+  Download,
   Pause,
   Pencil,
   Play,
@@ -30,6 +31,7 @@ import {
   type CrosswalkStatus,
   type CrosswalkSuggestion,
   type ServiceCodeMapping,
+  type UnmappedServiceCode,
 } from "@/lib/types";
 
 function localIso(d: Date): string {
@@ -49,6 +51,50 @@ function formatRelative(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString();
+}
+
+// RFC-4180 field escaping: quote when the value contains a comma, quote, or
+// newline; double any embedded quotes. Matches what the bulk-import parser reads.
+function csvField(value: string | number | null): string {
+  const s = value == null ? "" : String(value);
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+// Build a crosswalk-ready CSV from the unmapped report. The header carries the
+// service_code/cpt_code/note columns the bulk importer reads (cpt_code blank for
+// the user to fill); the type/description/reports/lines columns are context the
+// importer ignores but that help the user prioritize while filling in CPTs.
+function buildUnmappedCsv(codes: UnmappedServiceCode[]): string {
+  const header = ["service_code", "cpt_code", "type", "description", "reports", "lines", "note"];
+  const lines = [header.join(",")];
+  for (const c of codes) {
+    lines.push(
+      [
+        csvField(c.code),
+        "", // cpt_code — left blank for the user to fill, then re-import
+        csvField(c.kind === "cpt_missing_from_master" ? "Missing CPT" : "Non-CPT"),
+        csvField(c.description),
+        csvField(c.reportCount),
+        csvField(c.serviceLineCount),
+        "", // note — optional
+      ].join(","),
+    );
+  }
+  // Trailing newline so editors/round-trips don't merge the last row.
+  return lines.join("\r\n") + "\r\n";
+}
+
+function downloadCsv(filename: string, csv: string): void {
+  // Prepend a UTF-8 BOM so Excel opens it with the right encoding.
+  const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // What the Map dialog needs to do its job. Used for both "approve a new mapping"
@@ -160,10 +206,26 @@ export default function UnmappedCodesPage() {
             suppressed
           </p>
         </div>
-        <Button variant="ghost" onClick={() => setShowBulk(true)}>
-          <Upload className="size-4" />
-          Bulk import CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            onClick={() => {
+              const label = `unmapped-codes_${applied.from}_to_${applied.to}${
+                applied.site ? `_${applied.site}` : ""
+              }.csv`;
+              downloadCsv(label, buildUnmappedCsv(codes));
+            }}
+            disabled={codes.length === 0}
+            title="Download these codes as a crosswalk CSV — fill in cpt_code, then re-import"
+          >
+            <Download className="size-4" />
+            Export CSV
+          </Button>
+          <Button variant="ghost" onClick={() => setShowBulk(true)}>
+            <Upload className="size-4" />
+            Bulk import CSV
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap items-end gap-3">
@@ -824,7 +886,7 @@ function BulkImportDialog({ open, onClose }: BulkImportDialogProps) {
         onClose();
       }}
       title="Bulk import crosswalk CSV"
-      description="Header: service_code,cpt_code,note (note optional). Empty rows are skipped."
+      description="Header: service_code,cpt_code,note (note optional). Tip: use Export CSV, fill in cpt_code, and re-import here — extra columns are ignored and rows with a blank cpt_code are skipped."
     >
       <div className="space-y-4">
         <div className="space-y-1.5">

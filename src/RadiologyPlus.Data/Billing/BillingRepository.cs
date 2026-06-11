@@ -1012,6 +1012,88 @@ public sealed class BillingRepository : IBillingRepository
         return ((long[])raw).ToArray();
     }
 
+    public async Task<ReconciliationRun?> GetRunWithLinesAsync(
+        Guid tenantId,
+        long runId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+
+        // 1. Header — null when the run isn't visible to the tenant.
+        ReconciliationRun? header;
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT run_id, period_start, period_end, facility_id, run_kind,
+                       total_reports, total_radiologists, total_work_rvu, notes::text,
+                       generated_by_user_id, generated_at
+                FROM billing.reconciliation_runs
+                WHERE tenant_id = @t AND run_id = @r
+                LIMIT 1
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("r", runId);
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+            if (!await rdr.ReadAsync(cancellationToken)) return null;
+
+            var notesJson = rdr.IsDBNull(8) ? "[]" : rdr.GetString(8);
+            var notes = JsonSerializer.Deserialize<List<ReconciliationNote>>(notesJson)
+                ?? new List<ReconciliationNote>();
+
+            header = new ReconciliationRun(
+                RunId: rdr.GetInt64(0),
+                PeriodStart: new DateTimeOffset(rdr.GetDateTime(1), TimeSpan.Zero),
+                PeriodEnd: new DateTimeOffset(rdr.GetDateTime(2), TimeSpan.Zero),
+                FacilityId: rdr.IsDBNull(3) ? null : rdr.GetInt64(3),
+                RunKind: rdr.GetInt16(4),
+                TotalReports: rdr.GetInt32(5),
+                TotalRadiologists: rdr.GetInt32(6),
+                TotalWorkRvu: rdr.GetDecimal(7),
+                LineItems: Array.Empty<ReconciliationLineItem>(),
+                Notes: notes,
+                GeneratedByUserId: rdr.GetGuid(9),
+                GeneratedAt: new DateTimeOffset(rdr.GetDateTime(10), TimeSpan.Zero));
+        }
+
+        // 2. Line items in display order (physician name, then CPT).
+        var lines = new List<ReconciliationLineItem>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.CommandText = """
+                SELECT line_id, novarad_physician_id, physician_display_name,
+                       site_code, facility_id, cpt_code, cpt_description,
+                       report_count, units, work_rvu_per_unit, work_rvu_total,
+                       novarad_rvu_work, rvu_mismatch, novarad_report_ids
+                FROM billing.reconciliation_line_items
+                WHERE tenant_id = @t AND run_id = @r
+                ORDER BY physician_display_name, cpt_code
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("r", runId);
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+            {
+                lines.Add(new ReconciliationLineItem(
+                    LineId: rdr.GetInt64(0),
+                    NovaradPhysicianId: rdr.GetInt64(1),
+                    PhysicianDisplayName: rdr.GetString(2),
+                    SiteCode: rdr.GetString(3),
+                    FacilityId: rdr.IsDBNull(4) ? null : rdr.GetInt64(4),
+                    CptCode: rdr.GetString(5),
+                    CptDescription: rdr.IsDBNull(6) ? null : rdr.GetString(6),
+                    ReportCount: rdr.GetInt32(7),
+                    Units: rdr.GetDecimal(8),
+                    WorkRvuPerUnit: rdr.GetDecimal(9),
+                    WorkRvuTotal: rdr.GetDecimal(10),
+                    NovaradRvuWork: rdr.IsDBNull(11) ? null : rdr.GetDecimal(11),
+                    RvuMismatch: rdr.GetBoolean(12),
+                    NovaradReportIds: rdr.IsDBNull(13) ? Array.Empty<long>() : ((long[])rdr.GetValue(13)).ToArray()));
+            }
+        }
+
+        return header with { LineItems = lines };
+    }
+
     private static async Task<MasterIndex> LoadMasterForYearsAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, Guid tenantId,
         short[] years, CancellationToken ct)

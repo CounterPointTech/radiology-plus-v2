@@ -224,4 +224,64 @@ public sealed class NovaradReportsReader : INovaradReportsReader
         }
         return result;
     }
+
+    public async Task<ReportContent?> ReadReportFullAsync(
+        long reportId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _novarad.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // Same accession-driven join chain as ReadReportDetailsAsync, augmented with
+        // the report body, format, and signing-physician name. DISTINCT ON (report_id)
+        // collapses duplicate-accession fan-out down to one row per report.
+        cmd.CommandText = """
+            SELECT DISTINCT ON (r.report_id)
+                r.report_id,
+                r.signed_date,
+                r.signing_physician_id,
+                NULLIF(TRIM(COALESCE(pe.first_name, '') || ' ' || COALESCE(pe.last_name, '')), '') AS signing_physician_name,
+                o.accession_number::text,
+                s.study_date,
+                s.modality::text,
+                p.id AS patient_row_id,
+                p.patient_id::text,
+                p.last_name::text,
+                p.first_name::text,
+                p.birth_time,
+                p.gender::text,
+                r.report_format::text,
+                r.report_text::text
+            FROM ris.reports r
+            JOIN ris.order_procedures op ON op.procedure_id = r.procedure_id
+            JOIN ris.orders o            ON o.order_id      = op.order_id
+            LEFT JOIN ris.physicians ph  ON ph.physician_id = r.signing_physician_id
+            LEFT JOIN ris.people pe      ON pe.person_id    = ph.person_id
+            LEFT JOIN pacs.studies s     ON s.accession     = o.accession_number AND s.is_valid = TRUE
+            LEFT JOIN pacs.patients p    ON p.id            = s.patient
+            WHERE r.report_id = @id
+            ORDER BY r.report_id, s.study_date DESC NULLS LAST
+            LIMIT 1
+            """;
+        cmd.Parameters.AddWithValue("id", reportId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken)) return null;
+
+        return new ReportContent(
+            ReportId:             reader.GetInt64(0),
+            SignedAt:             reader.IsDBNull(1) ? null : LocalWallClock(reader.GetDateTime(1)),
+            SigningPhysicianId:   reader.IsDBNull(2) ? null : reader.GetInt64(2),
+            SigningPhysicianName: reader.IsDBNull(3) ? null : reader.GetString(3),
+            Accession:            reader.IsDBNull(4) ? null : reader.GetString(4),
+            StudyDate:            reader.IsDBNull(5) ? null : LocalWallClock(reader.GetDateTime(5)),
+            Modality:             reader.IsDBNull(6) ? null : reader.GetString(6),
+            NovaradPatientId:     reader.IsDBNull(7) ? null : reader.GetInt64(7),
+            PatientPid:           reader.IsDBNull(8) ? null : reader.GetString(8),
+            PatientLastName:      reader.IsDBNull(9) ? null : reader.GetString(9),
+            PatientFirstName:     reader.IsDBNull(10) ? null : reader.GetString(10),
+            PatientBirthDate:     reader.IsDBNull(11) ? null : DateOnly.FromDateTime(reader.GetDateTime(11)),
+            PatientGender:        reader.IsDBNull(12) ? null : reader.GetString(12),
+            ReportFormat:         reader.IsDBNull(13) ? null : reader.GetString(13),
+            ReportText:           reader.IsDBNull(14) ? null : reader.GetString(14));
+    }
 }

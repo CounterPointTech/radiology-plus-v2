@@ -1,6 +1,6 @@
 // Thin typed wrappers over the API. Keeps endpoint strings out of components.
 
-import { apiClient, get, post } from "./api-client";
+import { apiClient, get, getBlob, post } from "./api-client";
 import type {
   BulkImportResult,
   CandidateOrder,
@@ -12,7 +12,9 @@ import type {
   CrosswalkSuggestionsResponse,
   CrosswalkUpsertRequest,
   DoTheDoOutcome,
+  PatientJacketEntry,
   PatientSearchResult,
+  ReportContent,
   ReadyStudy,
   ReconciliationLineDetailResponse,
   ReconciliationRun,
@@ -41,11 +43,23 @@ export const techApi = {
     return get<ValidationRecord>(`/tech-validation/${validationId}`);
   },
 
-  step(validationId: string, step: 1 | 2 | 3 | 4 | 5, body: StepRequest) {
+  step(validationId: string, step: 1 | 2 | 3 | 4 | 5 | 6, body: StepRequest) {
     return post<ValidationRecord>(
       `/tech-validation/${validationId}/step/${step}`,
       body,
     );
+  },
+
+  patientJacket(
+    novaradPatientId: number,
+    params: { currentStudyId: number; description?: string | null; modality?: string | null; limit?: number },
+  ) {
+    return get<PatientJacketEntry[]>(`/tech-validation/jacket/${novaradPatientId}`, {
+      currentStudyId: params.currentStudyId,
+      description: params.description ?? undefined,
+      modality: params.modality ?? undefined,
+      limit: params.limit,
+    });
   },
 
   ordersByPatient(patientPid: string) {
@@ -165,6 +179,20 @@ export const billingApi = {
 
   unmappedCodes(params: { from?: string; to?: string; site?: string }) {
     return get<UnmappedCodesResponse>("/billing/reconciliation/unmapped", params);
+  },
+
+  exportReconciliation(
+    runId: number,
+    params?: { physicianId?: number | null; siteCode?: string | null },
+  ) {
+    return getBlob(`/billing/reconciliation/${runId}/export`, {
+      physicianId: params?.physicianId ?? undefined,
+      siteCode: params?.siteCode ?? undefined,
+    });
+  },
+
+  reportContent(reportId: number) {
+    return get<ReportContent>(`/billing/reconciliation/report/${reportId}`);
   },
 
   // ------------------------------------------------------------------------

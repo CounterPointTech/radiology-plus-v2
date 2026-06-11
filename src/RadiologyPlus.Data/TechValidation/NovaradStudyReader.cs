@@ -29,18 +29,35 @@ public sealed class NovaradStudyReader : INovaradStudyReader
         // via Do-the-Do, so excluding is_valid=FALSE rows would defeat the purpose of the
         // worklist. custom_3 stays in the projection as diagnostic context but is no longer
         // the load-bearing signal.
+        // study_description = ris.orders.description (clinical text like "CT HEAD W/O CONTRAST")
+        // joined via accession_number, falling back to pacs.studies.anatomical_area when there
+        // is no matching order row.
+        //
+        // CRITICAL: use LATERAL (not a plain LEFT JOIN). A single accession can match many
+        // ris.orders rows (historical re-orders, addenda, etc.) — a plain LEFT JOIN cartesians
+        // out by ~1000×, hits LIMIT mid-fan-out, and the upsert pass picks whichever order
+        // happened to land in that slice (often the one with NULL description). The LATERAL
+        // collapses to at most one order per study, deterministically picking the newest.
         cmd.CommandText = """
             SELECT
                 s.id, s.study_uid::text, s.accession::text, s.study_date, s.modality::text,
                 s.custom_3::text, s.facility_id, s.last_image_processed_date,
-                p.id AS patient_row_id, p.patient_id::text, p.last_name::text, p.first_name::text, p.birth_time, p.gender::text
+                p.id AS patient_row_id, p.patient_id::text, p.last_name::text, p.first_name::text, p.birth_time, p.gender::text,
+                COALESCE(od.description, s.anatomical_area)::text AS study_description
             FROM pacs.studies s
             JOIN pacs.patients p ON p.id = s.patient
+            LEFT JOIN LATERAL (
+                SELECT o.description
+                FROM ris.orders o
+                WHERE o.accession_number = s.accession
+                ORDER BY o.creation_date DESC NULLS LAST
+                LIMIT 1
+            ) od ON TRUE
             WHERE s.status = 0
               AND s.last_image_processed_date IS NOT NULL
               AND s.last_image_processed_date > LOCALTIMESTAMP - @window
             ORDER BY s.last_image_processed_date DESC
-            LIMIT 500
+            LIMIT 5000
             """;
         cmd.Parameters.Add(new NpgsqlParameter("window", NpgsqlDbType.Interval) { Value = window });
 
@@ -63,9 +80,17 @@ public sealed class NovaradStudyReader : INovaradStudyReader
             SELECT
                 s.id, s.study_uid::text, s.accession::text, s.study_date, s.modality::text,
                 s.custom_3::text, s.facility_id, s.last_image_processed_date,
-                p.id AS patient_row_id, p.patient_id::text, p.last_name::text, p.first_name::text, p.birth_time, p.gender::text
+                p.id AS patient_row_id, p.patient_id::text, p.last_name::text, p.first_name::text, p.birth_time, p.gender::text,
+                COALESCE(od.description, s.anatomical_area)::text AS study_description
             FROM pacs.studies s
             JOIN pacs.patients p ON p.id = s.patient
+            LEFT JOIN LATERAL (
+                SELECT o.description
+                FROM ris.orders o
+                WHERE o.accession_number = s.accession
+                ORDER BY o.creation_date DESC NULLS LAST
+                LIMIT 1
+            ) od ON TRUE
             WHERE s.id = @id
             """;
         cmd.Parameters.AddWithValue("id", novaradStudyId);
@@ -126,6 +151,7 @@ public sealed class NovaradStudyReader : INovaradStudyReader
             StudyDate: reader.IsDBNull(3) ? null : LocalWallClock(reader.GetDateTime(3)),
             Modality: reader.IsDBNull(4) ? null : reader.GetString(4),
             Custom3: reader.IsDBNull(5) ? null : reader.GetString(5),
+            StudyDescription: reader.IsDBNull(14) ? null : reader.GetString(14),
             NovaradPatientId: reader.GetInt64(8),
             PatientPid: reader.IsDBNull(9) ? null : reader.GetString(9),
             PatientLastName: reader.IsDBNull(10) ? null : reader.GetString(10),
@@ -170,6 +196,68 @@ public sealed class NovaradStudyReader : INovaradStudyReader
                 Notes: reader.IsDBNull(6) ? null : reader.GetString(6),
                 ReferringPhysicianId: reader.IsDBNull(7) ? null : reader.GetInt64(7),
                 CreationDate: reader.IsDBNull(8) ? null : LocalWallClock(reader.GetDateTime(8))));
+        }
+        return list;
+    }
+
+    public async Task<IReadOnlyList<PatientJacketEntry>> ReadPatientJacketAsync(
+        long novaradPatientId,
+        long currentStudyId,
+        string? currentDescription,
+        string? currentModality,
+        int limit = 200,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _novarad.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // Score = 0.4 if same modality + (0.6 × pg_trgm similarity of descriptions).
+        // Crosses threshold (0.5) when modality matches AND descriptions agree on
+        // at least ~17% of trigrams, OR when descriptions overlap strongly enough
+        // on their own. Both factors are guarded against NULL inputs.
+        // LEFT JOIN LATERAL collapses many-orders-per-accession to one row per study.
+        // Plain LEFT JOIN would cartesian out and inflate both the count and the score
+        // calculation (running similarity() multiple times per study).
+        cmd.CommandText = """
+            SELECT s.id, s.study_uid::text, s.accession::text, s.study_date, s.modality::text,
+                   COALESCE(od.description, s.anatomical_area)::text AS description,
+                   (CASE WHEN @mod IS NOT NULL AND s.modality::text = @mod THEN 0.4 ELSE 0 END) +
+                   (CASE WHEN @desc IS NOT NULL
+                         THEN similarity(COALESCE(od.description, s.anatomical_area, ''), @desc) * 0.6
+                         ELSE 0 END) AS score
+            FROM pacs.studies s
+            LEFT JOIN LATERAL (
+                SELECT o.description
+                FROM ris.orders o
+                WHERE o.accession_number = s.accession
+                ORDER BY o.creation_date DESC NULLS LAST
+                LIMIT 1
+            ) od ON TRUE
+            WHERE s.patient = @pid
+              AND s.id <> @currentStudyId
+              AND s.is_valid = TRUE
+            ORDER BY score DESC, s.study_date DESC NULLS LAST
+            LIMIT @lim
+            """;
+        cmd.Parameters.AddWithValue("pid", novaradPatientId);
+        cmd.Parameters.AddWithValue("currentStudyId", currentStudyId);
+        cmd.Parameters.Add(new NpgsqlParameter("mod", NpgsqlDbType.Text) { Value = (object?)currentModality ?? DBNull.Value });
+        cmd.Parameters.Add(new NpgsqlParameter("desc", NpgsqlDbType.Text) { Value = (object?)currentDescription ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("lim", limit);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        var list = new List<PatientJacketEntry>();
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var score = reader.IsDBNull(6) ? 0d : Convert.ToDouble(reader.GetValue(6), System.Globalization.CultureInfo.InvariantCulture);
+            list.Add(new PatientJacketEntry(
+                NovaradStudyId: reader.GetInt64(0),
+                StudyUid: reader.GetString(1),
+                Accession: reader.IsDBNull(2) ? null : reader.GetString(2),
+                StudyDate: reader.IsDBNull(3) ? null : LocalWallClock(reader.GetDateTime(3)),
+                Modality: reader.IsDBNull(4) ? null : reader.GetString(4),
+                Description: reader.IsDBNull(5) ? null : reader.GetString(5),
+                Score: score,
+                Suggested: score >= 0.5));
         }
         return list;
     }

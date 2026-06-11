@@ -1,16 +1,18 @@
 namespace RadiologyPlus.Core.TechValidation;
 
 /// <summary>
-/// Wizard step, 1..5. Matches the whiteboard:
-/// 1 Study Selection · 2 Order Selection · 3 Reason/Notes (+ 3.5 Referring Phys) · 4 Review · 5 Do the Do.
+/// Wizard step, 1..6. Comparisons (3) was inserted between Order and Reason so the tech
+/// can flag prior studies for comparison before finalizing. Numeric values shifted:
+/// old Reason=3/Review=4/DoTheDo=5 → new 4/5/6. The DB check constraint follows in 0010.
 /// </summary>
 public enum WizardStep : short
 {
     Study = 1,
     Order = 2,
-    Reason = 3,
-    Review = 4,
-    DoTheDo = 5,
+    Comparisons = 3,
+    Reason = 4,
+    Review = 5,
+    DoTheDo = 6,
 }
 
 public enum ValidationStatus : short
@@ -50,6 +52,7 @@ public sealed record ReadyStudy(
     DateTimeOffset? StudyDate,
     string? Modality,
     string? Custom3,
+    string? StudyDescription,
     long NovaradPatientId,
     string? PatientPid,
     string? PatientLastName,
@@ -123,6 +126,21 @@ public sealed record PatientSearchResult(
     DateTimeOffset? RecentStudyDate);
 
 public sealed record TechNotesTemplate(long TemplateId, string Label, string Body, int SortOrder);
+
+/// <summary>
+/// One row of the patient's prior-study jacket for the wizard's Comparisons step.
+/// <see cref="Suggested"/> = true when the heuristic (same modality + description
+/// similarity) crosses the suggestion threshold; the UI pins those rows at the top.
+/// </summary>
+public sealed record PatientJacketEntry(
+    long NovaradStudyId,
+    string StudyUid,
+    string? Accession,
+    DateTimeOffset? StudyDate,
+    string? Modality,
+    string? Description,
+    double Score,
+    bool Suggested);
 
 /// <summary>One Do-the-Do orchestrator step.</summary>
 public sealed record DoTheDoRun(

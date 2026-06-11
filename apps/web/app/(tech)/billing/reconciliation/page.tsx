@@ -6,12 +6,14 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Download,
   Info,
   Play,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
+import { ReportView } from "@/components/billing/report-view";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -22,6 +24,7 @@ import {
   type ReconciliationDetailRow,
   type ReconciliationLineItem,
   type ReconciliationRun,
+  type ReportContent,
 } from "@/lib/types";
 import { formatDate, formatDateTime } from "@/lib/utils";
 
@@ -323,6 +326,7 @@ function ResultView({ run }: { run: ReconciliationRun }) {
       ) : (
         <>
           <ResultControls
+            runId={run.runId}
             physicians={byPhysician}
             physicianFilter={physicianFilter}
             setPhysicianFilter={setPhysicianFilter}
@@ -358,6 +362,7 @@ function ResultView({ run }: { run: ReconciliationRun }) {
 }
 
 function ResultControls({
+  runId,
   physicians,
   physicianFilter,
   setPhysicianFilter,
@@ -366,6 +371,7 @@ function ResultControls({
   onExpandAll,
   onCollapseAll,
 }: {
+  runId: number;
   physicians: PhysicianGroup[];
   physicianFilter: number | "all";
   setPhysicianFilter: (next: number | "all") => void;
@@ -374,6 +380,31 @@ function ResultControls({
   onExpandAll: () => void;
   onCollapseAll: () => void;
 }) {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  async function handleExport() {
+    setExportError(null);
+    setExporting(true);
+    try {
+      const { blob, filename } = await billingApi.exportReconciliation(runId, {
+        physicianId: physicianFilter === "all" ? null : physicianFilter,
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename ?? `reconciliation-${runId}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setExportError("Couldn't download the spreadsheet.");
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <section className="mb-4 flex flex-wrap items-end justify-between gap-x-4 gap-y-3">
       <label className="flex flex-col gap-1">
@@ -396,23 +427,40 @@ function ResultControls({
           ))}
         </select>
       </label>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={allExpanded ? onCollapseAll : onExpandAll}
-        disabled={!anyVisible}
-        className="h-10"
-      >
-        {allExpanded ? (
-          <>
-            <ChevronDown className="size-4" /> Collapse all
-          </>
-        ) : (
-          <>
-            <ChevronRight className="size-4" /> Expand all
-          </>
-        )}
-      </Button>
+      <div className="flex items-end gap-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={allExpanded ? onCollapseAll : onExpandAll}
+          disabled={!anyVisible}
+          className="h-10"
+        >
+          {allExpanded ? (
+            <>
+              <ChevronDown className="size-4" /> Collapse all
+            </>
+          ) : (
+            <>
+              <ChevronRight className="size-4" /> Expand all
+            </>
+          )}
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={handleExport}
+          loading={exporting}
+          className="h-10"
+          title="Download an .xlsx of this reconciliation, honoring the active physician filter"
+        >
+          <Download className="size-4" /> Export
+        </Button>
+      </div>
+      {exportError ? (
+        <p className="text-xs text-[color:var(--color-novarad-red)] basis-full">
+          {exportError}
+        </p>
+      ) : null}
     </section>
   );
 }
@@ -694,7 +742,48 @@ function LineRow({
   );
 }
 
+// Per-report content cache state, keyed by Novarad report_id.
+type ReportFetch =
+  | { state: "loading" }
+  | { state: "loaded"; content: ReportContent }
+  | { state: "error"; message: string };
+
 function LineDetail({ detail }: { detail: DetailState | undefined }) {
+  const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
+  const [contents, setContents] = useState<Map<number, ReportFetch>>(
+    () => new Map(),
+  );
+
+  const toggleReport = useCallback(async (reportId: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(reportId)) next.delete(reportId);
+      else next.add(reportId);
+      return next;
+    });
+    setContents((prev) => {
+      if (prev.has(reportId)) return prev;
+      const next = new Map(prev);
+      next.set(reportId, { state: "loading" });
+      return next;
+    });
+    if (contents.has(reportId)) return;
+    try {
+      const content = await billingApi.reportContent(reportId);
+      setContents((prev) => {
+        const next = new Map(prev);
+        next.set(reportId, { state: "loaded", content });
+        return next;
+      });
+    } catch {
+      setContents((prev) => {
+        const next = new Map(prev);
+        next.set(reportId, { state: "error", message: "Couldn't load the report." });
+        return next;
+      });
+    }
+  }, [contents]);
+
   if (!detail || detail.loading) {
     return (
       <div className="flex items-center gap-2 text-xs text-[color:var(--color-muted-fg)]">
@@ -722,6 +811,7 @@ function LineDetail({ detail }: { detail: DetailState | undefined }) {
       <table className="w-full text-xs">
         <thead className="text-left text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
           <tr>
+            <th className="w-6" />
             <th className="px-2 py-1.5 font-medium">Report</th>
             <th className="px-2 py-1.5 font-medium">Signed</th>
             <th className="px-2 py-1.5 font-medium">Accession</th>
@@ -735,67 +825,88 @@ function LineDetail({ detail }: { detail: DetailState | undefined }) {
           </tr>
         </thead>
         <tbody>
-          {rows.map((r) => (
-            <tr
-              key={r.reportId}
-              className="border-t border-[color:var(--color-border)]"
-            >
-              <td className="px-2 py-1.5 font-mono tabular-nums">{r.reportId}</td>
-              <td className="px-2 py-1.5 whitespace-nowrap">
-                {formatDateTime(r.signedAt)}
-              </td>
-              <td className="px-2 py-1.5 font-mono">
-                {r.accession ?? (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5">
-                {formatPatient(r.patientLastName, r.patientFirstName)}
-              </td>
-              <td className="px-2 py-1.5 font-mono">
-                {r.patientPid ?? (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5 whitespace-nowrap">
-                {r.patientBirthDate ? (
-                  formatDate(r.patientBirthDate)
-                ) : (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5">
-                {r.patientGender ?? (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5 whitespace-nowrap">
-                {r.studyDate ? (
-                  formatDateTime(r.studyDate)
-                ) : (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5">
-                {r.modality ?? (
-                  <span className="italic text-[color:var(--color-muted-fg)]">
-                    —
-                  </span>
-                )}
-              </td>
-              <td className="px-2 py-1.5 font-mono tabular-nums">{r.orderId}</td>
-            </tr>
-          ))}
+          {rows.map((r) => {
+            const isOpen = expanded.has(r.reportId);
+            const fetched = contents.get(r.reportId);
+            const Chevron = isOpen ? ChevronDown : ChevronRight;
+            return (
+              <Fragment key={r.reportId}>
+                <tr className="border-t border-[color:var(--color-border)]">
+                  <td className="px-1 py-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleReport(r.reportId)}
+                      aria-label={isOpen ? "Hide report" : "Show report"}
+                      aria-expanded={isOpen}
+                      className="inline-flex items-center justify-center rounded p-1 hover:bg-[color:var(--color-surface-2)]"
+                    >
+                      <Chevron className="size-3.5 text-[color:var(--color-muted-fg)]" />
+                    </button>
+                  </td>
+                  <td className="px-2 py-1.5 font-mono tabular-nums">{r.reportId}</td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {formatDateTime(r.signedAt)}
+                  </td>
+                  <td className="px-2 py-1.5 font-mono">
+                    {r.accession ?? (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {formatPatient(r.patientLastName, r.patientFirstName)}
+                  </td>
+                  <td className="px-2 py-1.5 font-mono">
+                    {r.patientPid ?? (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {r.patientBirthDate ? (
+                      formatDate(r.patientBirthDate)
+                    ) : (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {r.patientGender ?? (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 whitespace-nowrap">
+                    {r.studyDate ? (
+                      formatDateTime(r.studyDate)
+                    ) : (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5">
+                    {r.modality ?? (
+                      <span className="italic text-[color:var(--color-muted-fg)]">—</span>
+                    )}
+                  </td>
+                  <td className="px-2 py-1.5 font-mono tabular-nums">{r.orderId}</td>
+                </tr>
+                {isOpen ? (
+                  <tr className="border-t border-[color:var(--color-border)]">
+                    <td />
+                    <td colSpan={10} className="px-2 pb-3">
+                      {fetched?.state === "loading" || !fetched ? (
+                        <div className="flex items-center gap-2 text-xs text-[color:var(--color-muted-fg)]">
+                          <Spinner size={12} /> Loading report…
+                        </div>
+                      ) : fetched.state === "error" ? (
+                        <div className="flex items-center gap-2 text-xs text-[color:var(--color-novarad-red)]">
+                          <AlertCircle className="size-3.5" /> {fetched.message}
+                        </div>
+                      ) : (
+                        <ReportView content={fetched.content} />
+                      )}
+                    </td>
+                  </tr>
+                ) : null}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>

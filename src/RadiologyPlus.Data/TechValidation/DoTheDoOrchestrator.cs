@@ -320,6 +320,12 @@ public sealed class DoTheDoOrchestrator : IDoTheDoOrchestrator
                     cancellationToken: ct);
             }));
 
+        // TODO(FFI-comparisons): once the integration channel is chosen, insert an
+        // additional Do-the-Do step here that resolves IFfiComparisonSink from DI and
+        // calls SubmitFlaggedComparisonsAsync(val.ValidationId, val.ComparisonStudyIds).
+        // The NoOpFfiComparisonSink currently registered keeps the orchestrator stable
+        // until then. See IFfiComparisonSink for the three candidate routes.
+
         steps.Add(new DoTheDoStep(
             Order: 0,
             Key: "pacs.mark_patient_verified",

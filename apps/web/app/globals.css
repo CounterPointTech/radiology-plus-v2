@@ -56,3 +56,23 @@ html, body {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Print-only-the-report support. While `printing-report` is on <html>, hide every
+ * element except the descendants of `.report-print-target`. The target gets absolute
+ * positioning so it occupies the whole printed page instead of inheriting the layout
+ * frame's bounds. `<html>.printing-report` is set by the ReportView Print button and
+ * cleared on `afterprint`. */
+@media print {
+  html.printing-report body * { visibility: hidden; }
+  html.printing-report .report-print-target,
+  html.printing-report .report-print-target * { visibility: visible; }
+  html.printing-report .report-print-target {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    background: white;
+    color: black;
+  }
+  html.printing-report .report-print-no-print { display: none !important; }
+}

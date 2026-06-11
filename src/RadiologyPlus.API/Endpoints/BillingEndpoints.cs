@@ -1,9 +1,11 @@
+using System.Globalization;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
 using RadiologyPlus.Core.Audit;
 using RadiologyPlus.Core.Billing;
 using RadiologyPlus.Core.Identity;
+using RadiologyPlus.Data.Billing;
 
 namespace RadiologyPlus.API.Endpoints;
 
@@ -30,6 +32,8 @@ public static class BillingEndpoints
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
         group.MapGet("/reconciliation/{runId:long}/detail", ReconciliationLineDetailAsync).WithName("BillingReconciliationLineDetail");
+        group.MapGet("/reconciliation/{runId:long}/export", ExportReconciliationAsync).WithName("BillingReconciliationExport");
+        group.MapGet("/reconciliation/report/{reportId:long}", GetReportFullAsync).WithName("BillingReportFull");
 
         // Phase 2 — service_code → CPT crosswalk
         group.MapGet("/crosswalk", ListCrosswalkAsync).WithName("BillingCrosswalkList");
@@ -153,6 +157,49 @@ public static class BillingEndpoints
             http, ct);
 
         return Results.Ok(run);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ExportReconciliationAsync(
+        long runId,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IReconciliationExporter exporter,
+        [FromQuery] long? physicianId,
+        [FromQuery] string? siteCode,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var run = await repo.GetRunWithLinesAsync(user.TenantId, runId, ct);
+        if (run is null)
+            return Results.NotFound(new { error = $"Reconciliation run {runId} not found." });
+
+        var bytes = exporter.Export(run, new ReconciliationExportFilters(physicianId, siteCode));
+        var periodLabel = run.PeriodStart.ToString("yyyyMMdd", CultureInfo.InvariantCulture)
+            + "-" + run.PeriodEnd.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+        var filename = $"reconciliation-{runId}-{periodLabel}.xlsx";
+        return Results.File(
+            bytes,
+            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            fileDownloadName: filename);
+    }
+
+    [Authorize]
+    private static async Task<IResult> GetReportFullAsync(
+        long reportId,
+        ICurrentUser currentUser,
+        INovaradReportsReader reader,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var content = await reader.ReadReportFullAsync(reportId, ct);
+        return content is null
+            ? Results.NotFound(new { error = $"Report {reportId} not found." })
+            : Results.Ok(content);
     }
 
     [Authorize]

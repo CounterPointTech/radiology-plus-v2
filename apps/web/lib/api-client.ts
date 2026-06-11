@@ -105,6 +105,20 @@ export async function post<T>(url: string, body?: unknown) {
   return res.data;
 }
 
+/** GET that returns the response body as a Blob plus the server-suggested filename
+ *  parsed from Content-Disposition (when present). Used for spreadsheet downloads. */
+export async function getBlob(
+  url: string,
+  params?: Record<string, unknown>,
+): Promise<{ blob: Blob; filename: string | null }> {
+  const res = await apiClient.get<Blob>(url, { params, responseType: "blob" });
+  const disp = (res.headers as Record<string, string>)["content-disposition"] ?? "";
+  const match =
+    /filename\*=UTF-8''([^;]+)/i.exec(disp) ?? /filename="?([^";]+)"?/i.exec(disp);
+  const filename = match ? decodeURIComponent(match[1]!.trim()) : null;
+  return { blob: res.data, filename };
+}
+
 declare module "axios" {
   // Allow callers to flag a request as "do not attach the bearer token".
   export interface AxiosRequestConfig {

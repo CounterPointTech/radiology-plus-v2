@@ -62,11 +62,13 @@ builder.Services.AddScoped<ITechValidationRepository, TechValidationRepository>(
 builder.Services.AddScoped<INovaradStudyReader, NovaradStudyReader>();
 builder.Services.AddScoped<IDoTheDoOrchestrator, DoTheDoOrchestrator>();
 builder.Services.AddScoped<IStudyMergeService, StudyMergeService>();
+builder.Services.AddScoped<IFfiComparisonSink, NoOpFfiComparisonSink>();
 
 // Billing (Phase 2)
 builder.Services.AddScoped<IBillingRepository, BillingRepository>();
 builder.Services.AddSingleton<ICptMasterImporter, CptMasterImporter>();
 builder.Services.AddScoped<INovaradReportsReader, NovaradReportsReader>();
+builder.Services.AddSingleton<IReconciliationExporter, ReconciliationExporter>();
 
 // JWT
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();

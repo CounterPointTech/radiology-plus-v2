@@ -162,6 +162,16 @@ public interface IBillingRepository
         string cptCode,
         string siteCode,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Re-materialize a previously-persisted reconciliation run + its full line items
+    /// so it can be re-served (e.g. for the xlsx export). Returns null when the run
+    /// doesn't belong to the tenant (or doesn't exist). Read-only.
+    /// </summary>
+    Task<ReconciliationRun?> GetRunWithLinesAsync(
+        Guid tenantId,
+        long runId,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

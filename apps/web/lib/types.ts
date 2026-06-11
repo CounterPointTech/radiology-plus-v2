@@ -277,6 +277,7 @@ export interface ReadyStudy {
   studyDate: string | null;
   modality: string | null;
   custom3: string | null;
+  studyDescription: string | null;
   novaradPatientId: number;
   patientPid: string | null;
   patientLastName: string | null;
@@ -382,6 +383,35 @@ export interface CandidateOrder {
   notes: string | null;
   referringPhysicianId: number | null;
   creationDate: string | null;
+}
+
+export interface ReportContent {
+  reportId: number;
+  signedAt: string | null;
+  signingPhysicianId: number | null;
+  signingPhysicianName: string | null;
+  accession: string | null;
+  studyDate: string | null;
+  modality: string | null;
+  novaradPatientId: number | null;
+  patientPid: string | null;
+  patientLastName: string | null;
+  patientFirstName: string | null;
+  patientBirthDate: string | null;
+  patientGender: string | null;
+  reportFormat: string | null;
+  reportText: string | null;
+}
+
+export interface PatientJacketEntry {
+  novaradStudyId: number;
+  studyUid: string;
+  accession: string | null;
+  studyDate: string | null;
+  modality: string | null;
+  description: string | null;
+  score: number;
+  suggested: boolean;
 }
 
 export interface ComparisonCandidate {

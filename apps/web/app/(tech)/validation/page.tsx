@@ -5,8 +5,10 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { AxiosError } from "axios";
 import {
   AlertCircle,
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   Merge,
   RefreshCw,
   Search,
@@ -39,6 +41,11 @@ import { cn, computeAge, formatDate, fullName } from "@/lib/utils";
 interface PatientGroup {
   patientId: number;
   studies: ReadyStudy[];
+  // Accessions that appear on more than one study within the group. When non-empty
+  // the per-child row gets a "duplicate accession" badge and the merge dialog
+  // defaults its loser-selection to the duplicate set with the newest study as
+  // keeper. Empty for groups whose studies all have distinct accessions.
+  duplicateAccessions: Set<string>;
 }
 
 // Virtualized-list item shape. The worklist's visible content is a flat array
@@ -47,7 +54,7 @@ interface PatientGroup {
 type VirtualItem =
   | { kind: "singleton"; key: string; study: ReadyStudy }
   | { kind: "groupHeader"; key: string; group: PatientGroup; expanded: boolean }
-  | { kind: "groupChild"; key: string; study: ReadyStudy };
+  | { kind: "groupChild"; key: string; study: ReadyStudy; duplicateAccession: boolean };
 
 function flattenGroups(
   groups: PatientGroup[],
@@ -72,6 +79,7 @@ function flattenGroups(
             kind: "groupChild",
             key: `gc-${s.novaradStudyId}`,
             study: s,
+            duplicateAccession: s.accession != null && g.duplicateAccessions.has(s.accession),
           });
         }
       }
@@ -100,12 +108,40 @@ function groupByPatient(rows: ReadyStudy[]): PatientGroup[] {
   for (const s of rows) {
     if (seen.has(s.novaradPatientId)) continue;
     seen.add(s.novaradPatientId);
+    const studies = map.get(s.novaradPatientId)!;
+    // An accession is "duplicated" inside a group iff two or more studies in the
+    // group carry the same non-null accession — almost always a tech reshooting
+    // the same study without canceling the first one.
+    const accessionCounts = new Map<string, number>();
+    for (const study of studies) {
+      if (study.accession == null) continue;
+      accessionCounts.set(study.accession, (accessionCounts.get(study.accession) ?? 0) + 1);
+    }
+    const duplicateAccessions = new Set<string>();
+    for (const [acc, count] of accessionCounts) {
+      if (count >= 2) duplicateAccessions.add(acc);
+    }
     result.push({
       patientId: s.novaradPatientId,
-      studies: map.get(s.novaradPatientId)!,
+      studies,
+      duplicateAccessions,
     });
   }
   return result;
+}
+
+// Render: "2 share accession 233923620250217 — probably duplicates." for one
+// duplicated accession, or "Two accessions are duplicated across these studies."
+// when more than one set repeats. Singular/plural friendly without a templating dance.
+function duplicateAccessionsSummary(group: PatientGroup): string {
+  const dups = Array.from(group.duplicateAccessions);
+  if (dups.length === 0) return "";
+  if (dups.length === 1) {
+    const acc = dups[0]!;
+    const count = group.studies.filter((s) => s.accession === acc).length;
+    return `${count} share accession ${acc} — probably duplicates.`;
+  }
+  return `${dups.length} accessions are duplicated across these studies — probably duplicates.`;
 }
 
 const WORKLIST_LIMIT = 500;
@@ -512,6 +548,7 @@ export default function WorklistPage() {
                         disabled={startMutation.isPending}
                         onPick={handlePick}
                         indent
+                        duplicateAccession={item.duplicateAccession}
                       />
                     )}
                   </div>
@@ -535,12 +572,10 @@ export default function WorklistPage() {
           setMergeTarget(null);
           mergeMutation.reset();
         }}
-        onSubmit={(winningStudyId, reason) =>
+        onSubmit={(winningStudyId, losingStudyIds, reason) =>
           mergeMutation.mutate({
             winningStudyId,
-            losingStudyIds: (mergeTarget?.studies ?? [])
-              .filter((s) => s.novaradStudyId !== winningStudyId)
-              .map((s) => s.novaradStudyId),
+            losingStudyIds,
             reason,
           })
         }
@@ -557,50 +592,51 @@ const WorklistRow = memo(function WorklistRow({
   disabled,
   onPick,
   indent = false,
+  duplicateAccession = false,
 }: {
   study: ReadyStudy;
   disabled: boolean;
   onPick: (study: ReadyStudy) => void;
   indent?: boolean;
+  duplicateAccession?: boolean;
 }) {
   const claimed = !!study.inProgressValidationId;
 
   return (
     <div
       role="row"
-      tabIndex={0}
-      onClick={() => {
-        if (!disabled) onPick(study);
-      }}
-      onKeyDown={(e) => {
-        if ((e.key === "Enter" || e.key === " ") && !disabled) {
-          e.preventDefault();
-          onPick(study);
-        }
-      }}
-      aria-disabled={disabled}
       className={cn(
-        "grid items-center text-sm border-t border-[color:var(--color-border)] cursor-pointer text-sm",
+        "grid items-center text-sm border-t border-[color:var(--color-border)]",
         GRID_COLS,
-        "hover:bg-[color:var(--color-surface-2)] focus:outline-none focus:bg-[color:var(--color-surface-2)]",
         // Group-child rows: a left accent stripe + faint accent tint anchors them to
         // their parent and separates them from a singleton row immediately below.
         indent &&
           "bg-[color:var(--color-accent)]/4 border-l-2 border-l-[color:var(--color-accent)]/50",
-        claimed && "bg-[color:var(--color-caution)]/8",
+        // Claimed rows use a slightly stronger accent tint than group-children so they
+        // remain distinguishable at a glance. Never `--color-caution` — red implies an
+        // error, but "in progress" is just informational.
+        claimed && "bg-[color:var(--color-accent)]/10",
         disabled && "opacity-60 pointer-events-none",
       )}
     >
       <span role="cell" className="px-2 py-3" />
       <span role="cell" className={cn("px-4 py-3 font-mono text-xs", indent && "pl-10")}>
-        {study.patientPid ?? <span className="text-[color:var(--color-muted-fg)]">—</span>}
+        {study.patientPid ? (
+          <CopyableInline text={study.patientPid} mono />
+        ) : (
+          <span className="text-[color:var(--color-muted-fg)]">—</span>
+        )}
       </span>
       <span role="cell" className="px-4 py-3 min-w-0">
         <div className="font-medium truncate">
           {fullName(study.patientLastName, study.patientFirstName)}
         </div>
-        <div className="text-xs text-[color:var(--color-muted-fg)] font-mono truncate">
-          {study.studyUid}
+        <div className="text-xs text-[color:var(--color-muted-fg)]">
+          {study.studyDescription ? (
+            <CopyableInline text={study.studyDescription} />
+          ) : (
+            "—"
+          )}
         </div>
       </span>
       <span role="cell" className="px-4 py-3">
@@ -609,23 +645,83 @@ const WorklistRow = memo(function WorklistRow({
           {computeAge(study.patientBirthDate)}
         </div>
       </span>
-      <span role="cell" className="px-4 py-3 font-mono text-xs truncate">
-        {study.accession ?? <span className="text-[color:var(--color-muted-fg)]">—</span>}
+      <span role="cell" className="px-4 py-3 font-mono text-xs min-w-0">
+        {study.accession ? (
+          <CopyableInline text={study.accession} mono />
+        ) : (
+          <span className="text-[color:var(--color-muted-fg)]">—</span>
+        )}
+        {duplicateAccession ? (
+          <Badge variant="accent" className="mt-1 font-sans text-[10px]" title="Another study in this group shares this accession">
+            duplicate accession
+          </Badge>
+        ) : null}
       </span>
       <span role="cell" className="px-4 py-3">{study.modality ?? "—"}</span>
       <span role="cell" className="px-4 py-3">{formatDate(study.studyDate)}</span>
       <span role="cell" className="px-4 py-3">
         {claimed ? (
-          <Badge variant="caution">
-            In progress · {study.inProgressStartedByDisplay ?? "someone"}
-          </Badge>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="accent">
+              In progress · {study.inProgressStartedByDisplay ?? "someone"}
+            </Badge>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => onPick(study)}
+              disabled={disabled}
+              className="h-7 px-2 text-xs"
+            >
+              Resume
+            </Button>
+          </div>
         ) : (
-          <Badge variant="accent">Ready</Badge>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => onPick(study)}
+            disabled={disabled}
+            className="h-8"
+          >
+            Validate
+          </Button>
         )}
       </span>
     </div>
   );
 });
+
+/** Inline value with a tiny clipboard-copy affordance to its right. Used for IDs
+ *  and descriptions in the worklist so highlighting text doesn't fight with a
+ *  whole-row click handler. */
+function CopyableInline({ text, mono = false }: { text: string; mono?: boolean }) {
+  const [copied, setCopied] = useState(false);
+  async function copy(e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      // Older browsers / insecure contexts: silently fail; the user can still
+      // highlight + Ctrl+C since the row click handler is gone.
+    }
+  }
+  return (
+    <span className="inline-flex items-center gap-1 min-w-0">
+      <span className={cn("truncate", mono && "font-mono")}>{text}</span>
+      <button
+        type="button"
+        onClick={copy}
+        title={copied ? "Copied" : "Copy"}
+        aria-label={copied ? "Copied" : "Copy to clipboard"}
+        className="shrink-0 inline-flex items-center justify-center rounded p-0.5 text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)] opacity-60 hover:opacity-100"
+      >
+        {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+      </button>
+    </span>
+  );
+}
 
 const GroupHeaderRow = memo(function GroupHeaderRow({
   group,
@@ -683,7 +779,12 @@ const GroupHeaderRow = memo(function GroupHeaderRow({
         role="cell"
         className="px-4 py-3 text-xs text-[color:var(--color-muted-fg)] [grid-column:span_3]"
       >
-        Looks like these studies are for the same patient. You can merge them into one.
+        <div>Looks like these studies are for the same patient. You can merge them into one.</div>
+        {group.duplicateAccessions.size > 0 ? (
+          <div className="mt-0.5 text-[color:var(--color-accent)]">
+            {duplicateAccessionsSummary(group)}
+          </div>
+        ) : null}
       </span>
       <span role="cell" className="px-4 py-3 whitespace-nowrap">
         <Button
@@ -712,7 +813,7 @@ function MergeStudiesDialog({
 }: {
   target: PatientGroup | null;
   onClose: () => void;
-  onSubmit: (winningStudyId: number, reason: string) => void;
+  onSubmit: (winningStudyId: number, losingStudyIds: number[], reason: string) => void;
   submitting: boolean;
   outcome: StudyMergeOutcome | null;
   errorMessage: string | null;
@@ -721,16 +822,63 @@ function MergeStudiesDialog({
   // Caller passes a `key` derived from target.patientId so this component
   // remounts per merge target — useState initializers re-run against the new
   // group and we don't need imperative state syncing.
-  const [keeperId, setKeeperId] = useState<number | undefined>(
-    () => target?.studies[0]?.novaradStudyId,
+  // When the group has a duplicate-accession set, bias the dialog toward merging
+  // just that pair (newest study as keeper, the other duplicates as losers) — the
+  // most common reason to open this dialog is exactly that case. Tech can still
+  // adjust. Otherwise fall back to "first study is keeper, all others are losers".
+  const studiesForInit = target?.studies ?? [];
+  const duplicateStudies = studiesForInit.filter(
+    (s) => s.accession != null && target?.duplicateAccessions.has(s.accession),
+  );
+  let initialKeeperId: number | undefined;
+  let initialLosers: number[];
+  if (duplicateStudies.length >= 2) {
+    const sorted = [...duplicateStudies].sort((a, b) => {
+      const ad = a.studyDate ?? "";
+      const bd = b.studyDate ?? "";
+      return bd.localeCompare(ad);
+    });
+    initialKeeperId = sorted[0]!.novaradStudyId;
+    initialLosers = sorted.slice(1).map((s) => s.novaradStudyId);
+  } else {
+    initialKeeperId = studiesForInit[0]?.novaradStudyId;
+    initialLosers = studiesForInit
+      .map((s) => s.novaradStudyId)
+      .filter((id) => id !== initialKeeperId);
+  }
+  const [keeperId, setKeeperId] = useState<number | undefined>(() => initialKeeperId);
+  const [losingSelections, setLosingSelections] = useState<Set<number>>(
+    () => new Set(initialLosers),
   );
   const [reason, setReason] = useState("");
 
   const studies = target?.studies ?? [];
   const head = studies[0];
 
-  const others = studies.length > 0 ? studies.length - 1 : 0;
+  const selectedCount = losingSelections.size;
   const patientName = head ? fullName(head.patientLastName, head.patientFirstName) : "";
+
+  // When the tech picks a different keeper, fold the previous keeper into the loser
+  // selection (auto-checked, matching default behavior) and remove the new keeper.
+  function pickKeeper(id: number) {
+    if (id === keeperId) return;
+    setLosingSelections((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      if (keeperId != null) next.add(keeperId);
+      return next;
+    });
+    setKeeperId(id);
+  }
+
+  function toggleLoser(id: number, checked: boolean) {
+    setLosingSelections((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  }
 
   return (
     <Dialog
@@ -748,32 +896,53 @@ function MergeStudiesDialog({
       <div className="space-y-3">
         <Label>Select the main study</Label>
         <div className="space-y-2 max-h-64 overflow-y-auto rounded-md border border-[color:var(--color-border)] p-2">
-          {studies.map((s) => (
-            <label
-              key={s.novaradStudyId}
-              className={cn(
-                "flex items-start gap-2 rounded p-2 cursor-pointer hover:bg-[color:var(--color-surface-2)]",
-                keeperId === s.novaradStudyId && "bg-[color:var(--color-accent)]/10",
-              )}
-            >
-              <input
-                type="radio"
-                name="keeper"
-                value={s.novaradStudyId}
-                checked={keeperId === s.novaradStudyId}
-                onChange={() => setKeeperId(s.novaradStudyId)}
-                className="mt-1"
-              />
-              <div className="text-xs">
-                <div className="font-medium">
-                  {s.modality ?? "—"} · Accession {s.accession ?? "—"}
-                </div>
-                <div className="text-[color:var(--color-muted-fg)]">
-                  Study date {formatDate(s.studyDate)}
+          {studies.map((s) => {
+            const isKeeper = keeperId === s.novaradStudyId;
+            const isSelected = losingSelections.has(s.novaradStudyId);
+            return (
+              <div
+                key={s.novaradStudyId}
+                className={cn(
+                  "flex items-start gap-3 rounded p-2 hover:bg-[color:var(--color-surface-2)]",
+                  isKeeper && "bg-[color:var(--color-accent)]/10",
+                )}
+              >
+                <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                  <input
+                    type="radio"
+                    name="keeper"
+                    value={s.novaradStudyId}
+                    checked={isKeeper}
+                    onChange={() => pickKeeper(s.novaradStudyId)}
+                    aria-label="Main study"
+                  />
+                  <span className="text-[10px] uppercase tracking-wide text-[color:var(--color-muted-fg)]">
+                    Main
+                  </span>
+                </label>
+                <label className="flex items-center gap-2 cursor-pointer pt-0.5">
+                  <input
+                    type="checkbox"
+                    checked={!isKeeper && isSelected}
+                    disabled={isKeeper}
+                    onChange={(e) => toggleLoser(s.novaradStudyId, e.target.checked)}
+                    aria-label="Merge this study into main"
+                  />
+                  <span className="text-[10px] uppercase tracking-wide text-[color:var(--color-muted-fg)]">
+                    Merge
+                  </span>
+                </label>
+                <div className="text-xs">
+                  <div className="font-medium">
+                    {s.modality ?? "—"} · Accession {s.accession ?? "—"}
+                  </div>
+                  <div className="text-[color:var(--color-muted-fg)]">
+                    Study date {formatDate(s.studyDate)}
+                  </div>
                 </div>
               </div>
-            </label>
-          ))}
+            );
+          })}
         </div>
 
         <Label>Note (optional)</Label>
@@ -839,13 +1008,15 @@ function MergeStudiesDialog({
             variant="primary"
             size="sm"
             onClick={() => {
-              if (keeperId != null) onSubmit(keeperId, reason);
+              if (keeperId != null && selectedCount > 0) {
+                onSubmit(keeperId, Array.from(losingSelections), reason);
+              }
             }}
-            disabled={submitting || keeperId == null || studies.length < 2}
+            disabled={submitting || keeperId == null || selectedCount === 0}
             className="whitespace-nowrap"
           >
             {submitting ? <Spinner size={14} /> : <Merge className="size-4" />}
-            Merge {others} into main study
+            Merge {selectedCount} into main study
           </Button>
         </DialogActions>
       </div>
