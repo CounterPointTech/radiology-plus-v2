@@ -187,7 +187,28 @@ public sealed record UnmappedServiceCode(
     string? Description,
     int ReportCount,
     int ServiceLineCount,
-    bool LooksLikeCpt);
+    bool LooksLikeCpt,
+    // Which Novarad sites this code appeared at, with per-site impact counts.
+    IReadOnlyList<UnmappedFacilityBreakdown> Facilities,
+    // Best CPT-master match for this code (top suggestion), surfaced inline so the
+    // user sees a candidate CPT + its RVU without opening the Map dialog. Null when
+    // there's no confident match. SuggestionHitKind = "exact_code" | "description".
+    string? SuggestedCpt,
+    string? SuggestedCptDescription,
+    decimal? SuggestedWorkRvu,
+    string? SuggestionHitKind);
+
+/// <summary>
+/// Per-site breakdown of an unmapped code's impact — which Novarad <c>site_code</c>
+/// it appeared at and how many reports / service lines there. <c>FacilityId</c> is
+/// the local <c>tenancy.facilities</c> id when the site_code is mapped (often null —
+/// the customer's site_codes aren't all mapped to facility rows).
+/// </summary>
+public sealed record UnmappedFacilityBreakdown(
+    string SiteCode,
+    long? FacilityId,
+    int ReportCount,
+    int ServiceLineCount);
 
 /// <summary>Before/after pair returned from UpdateCptCodeAsync for audit.</summary>
 public sealed record CptCodeChange(CptCode Before, CptCode After);

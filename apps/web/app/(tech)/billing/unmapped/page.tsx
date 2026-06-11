@@ -65,15 +65,24 @@ function csvField(value: string | number | null): string {
 // the user to fill); the type/description/reports/lines columns are context the
 // importer ignores but that help the user prioritize while filling in CPTs.
 function buildUnmappedCsv(codes: UnmappedServiceCode[]): string {
-  const header = ["service_code", "cpt_code", "type", "description", "reports", "lines", "note"];
+  const header = [
+    "service_code", "cpt_code", "suggested_cpt", "suggested_rvu",
+    "type", "description", "facilities", "reports", "lines", "note",
+  ];
   const lines = [header.join(",")];
   for (const c of codes) {
+    const facilities = (c.facilities ?? [])
+      .map((f) => `${f.siteCode}(${f.reportCount})`)
+      .join("; ");
     lines.push(
       [
         csvField(c.code),
-        "", // cpt_code — left blank for the user to fill, then re-import
+        "", // cpt_code — left blank for the user to confirm, then re-import
+        csvField(c.suggestedCpt), // a candidate only — review before mapping
+        csvField(c.suggestedWorkRvu == null ? "" : c.suggestedWorkRvu.toFixed(2)),
         csvField(c.kind === "cpt_missing_from_master" ? "Missing CPT" : "Non-CPT"),
         csvField(c.description),
+        csvField(facilities),
         csvField(c.reportCount),
         csvField(c.serviceLineCount),
         "", // note — optional
@@ -82,6 +91,31 @@ function buildUnmappedCsv(codes: UnmappedServiceCode[]): string {
   }
   // Trailing newline so editors/round-trips don't merge the last row.
   return lines.join("\r\n") + "\r\n";
+}
+
+// Display helpers for the facility-aware table. When a facility filter is active the
+// per-site counts replace the code totals; otherwise the totals (across all sites) show.
+function rowCounts(
+  c: UnmappedServiceCode,
+  facility: string,
+): { reports: number; lines: number } {
+  if (facility !== "all") {
+    const f = (c.facilities ?? []).find((x) => x.siteCode === facility);
+    return { reports: f?.reportCount ?? 0, lines: f?.serviceLineCount ?? 0 };
+  }
+  return { reports: c.reportCount, lines: c.serviceLineCount };
+}
+
+function facilityLabel(c: UnmappedServiceCode, facility: string): string {
+  const fs = c.facilities ?? [];
+  if (facility !== "all") return facility;
+  if (fs.length === 0) return "—";
+  if (fs.length === 1) return fs[0].siteCode;
+  return `${fs.length} sites`;
+}
+
+function facilityTitle(c: UnmappedServiceCode): string {
+  return (c.facilities ?? []).map((f) => `${f.siteCode} (${f.reportCount})`).join(", ");
 }
 
 function downloadCsv(filename: string, csv: string): void {
@@ -112,24 +146,25 @@ export default function UnmappedCodesPage() {
 
   const [from, setFrom] = useState(() => localIso(new Date(Date.now() - 60 * 86_400_000)));
   const [to, setTo] = useState(() => localIso(new Date()));
-  const [site, setSite] = useState("");
-  const [applied, setApplied] = useState<{ from: string; to: string; site: string }>({
+  const [applied, setApplied] = useState<{ from: string; to: string }>({
     from: localIso(new Date(Date.now() - 60 * 86_400_000)),
     to: localIso(new Date()),
-    site: "",
   });
+  // Display preferences — the full report loads once and is filtered client-side.
+  const [view, setView] = useState<"desc" | "cpt">("desc");
+  const [search, setSearch] = useState("");
+  const [facility, setFacility] = useState<string>("all");
   const [mapTarget, setMapTarget] = useState<MapDialogTarget | null>(null);
   const [showBulk, setShowBulk] = useState(false);
   const [showMappings, setShowMappings] = useState(false);
   const [mappingsFilter, setMappingsFilter] = useState<CrosswalkStatus | "all">("all");
 
   const report = useQuery({
-    queryKey: ["unmapped", applied.from, applied.to, applied.site],
+    queryKey: ["unmapped", applied.from, applied.to],
     queryFn: () =>
       billingApi.unmappedCodes({
         from: applied.from,
         to: applied.to,
-        site: applied.site || undefined,
       }),
   });
 
@@ -178,6 +213,27 @@ export default function UnmappedCodesPage() {
   const data = report.data;
   const codes = data?.codes ?? [];
 
+  // Facility filter options = the distinct Novarad sites present in this report
+  // (tenancy.facilities is sparse for the customer's site_codes, so derive from data).
+  const facilityOptions = (() => {
+    const set = new Set<string>();
+    for (const c of codes) for (const f of c.facilities ?? []) set.add(f.siteCode);
+    return [...set].sort((a, b) => a.localeCompare(b));
+  })();
+
+  // Description-based search (also matches the service code + suggested CPT) plus the
+  // facility filter — both client-side over the already-loaded report.
+  const q = search.trim().toLowerCase();
+  const filteredCodes = codes.filter((c) => {
+    if (facility !== "all" && !(c.facilities ?? []).some((f) => f.siteCode === facility))
+      return false;
+    if (q) {
+      const hay = `${c.description ?? ""} ${c.code} ${c.suggestedCpt ?? ""}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
   const totalsRows = mappingsTotals.data?.rows ?? [];
   const approvedCount = totalsRows.filter((m) => m.status === 1).length;
   const suppressedCount = totalsRows.filter((m) => m.status === 2).length;
@@ -185,7 +241,7 @@ export default function UnmappedCodesPage() {
   const mappingRows = mappings.data?.rows ?? [];
 
   return (
-    <div className="mx-auto max-w-5xl px-6 py-8 space-y-6">
+    <div className="mx-auto max-w-7xl px-6 py-8 space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] uppercase tracking-[0.3em] text-[color:var(--color-accent)]">
@@ -210,13 +266,12 @@ export default function UnmappedCodesPage() {
           <Button
             variant="ghost"
             onClick={() => {
-              const label = `unmapped-codes_${applied.from}_to_${applied.to}${
-                applied.site ? `_${applied.site}` : ""
-              }.csv`;
-              downloadCsv(label, buildUnmappedCsv(codes));
+              const suffix = facility !== "all" ? `_${facility}` : "";
+              const label = `unmapped-codes_${applied.from}_to_${applied.to}${suffix}.csv`;
+              downloadCsv(label, buildUnmappedCsv(filteredCodes));
             }}
-            disabled={codes.length === 0}
-            title="Download these codes as a crosswalk CSV — fill in cpt_code, then re-import"
+            disabled={filteredCodes.length === 0}
+            title="Download the shown codes as a crosswalk CSV — fill in cpt_code, then re-import"
           >
             <Download className="size-4" />
             Export CSV
@@ -237,22 +292,69 @@ export default function UnmappedCodesPage() {
           <Label htmlFor="to">To</Label>
           <Input id="to" type="date" value={to} onChange={(e) => setTo(e.target.value)} className="w-auto" />
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="site">Site (optional)</Label>
-          <Input id="site" value={site} onChange={(e) => setSite(e.target.value)} placeholder="site_code" className="w-40" />
-        </div>
-        <Button onClick={() => setApplied({ from, to, site })} loading={report.isFetching}>
+        <Button onClick={() => setApplied({ from, to })} loading={report.isFetching}>
           Generate
         </Button>
       </div>
 
       {data ? (
-        <p className="text-sm text-[color:var(--color-muted-fg)]">
-          <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalCodes}</span>{" "}
-          unmapped code{data.totalCodes === 1 ? "" : "s"} ·{" "}
-          <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalReportsUncredited}</span>{" "}
-          report{data.totalReportsUncredited === 1 ? "" : "s"} uncredited
-        </p>
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <p className="text-sm text-[color:var(--color-muted-fg)]">
+            <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalCodes}</span>{" "}
+            unmapped code{data.totalCodes === 1 ? "" : "s"} ·{" "}
+            <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalReportsUncredited}</span>{" "}
+            report{data.totalReportsUncredited === 1 ? "" : "s"} uncredited
+            {filteredCodes.length !== codes.length ? (
+              <>
+                {" "}·{" "}
+                <span className="font-medium text-[color:var(--color-base-fg)]">{filteredCodes.length}</span>{" "}
+                shown
+              </>
+            ) : null}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Description-first (default) vs CPT-first column order */}
+            <div className="flex items-center gap-1">
+              {(["desc", "cpt"] as const).map((v) => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setView(v)}
+                  className={`px-2.5 py-1 rounded-md text-xs border ${
+                    view === v
+                      ? "border-[color:var(--color-accent)] bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+                      : "border-[color:var(--color-border)] text-[color:var(--color-muted-fg)] hover:bg-[color:var(--color-surface-2)]"
+                  }`}
+                >
+                  {v === "desc" ? "Description first" : "CPT first"}
+                </button>
+              ))}
+            </div>
+            <div className="relative">
+              <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-[color:var(--color-muted-fg)] pointer-events-none" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search descriptions…"
+                className="pl-9 w-64"
+                aria-label="Search unmapped codes by description"
+              />
+            </div>
+            <select
+              value={facility}
+              onChange={(e) => setFacility(e.target.value)}
+              aria-label="Filter by facility"
+              className="h-10 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/60"
+            >
+              <option value="all">All facilities ({facilityOptions.length})</option>
+              {facilityOptions.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
       ) : null}
 
       {report.isError ? (
@@ -266,9 +368,20 @@ export default function UnmappedCodesPage() {
             <table className="w-full text-sm">
               <thead className="text-left text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)] bg-[color:var(--color-surface-2)]">
                 <tr>
-                  <th className="px-4 py-3 font-medium">Code</th>
+                  {view === "desc" ? (
+                    <>
+                      <th className="px-4 py-3 font-medium">Description</th>
+                      <th className="px-4 py-3 font-medium">Code</th>
+                    </>
+                  ) : (
+                    <>
+                      <th className="px-4 py-3 font-medium">Code</th>
+                      <th className="px-4 py-3 font-medium">Description</th>
+                    </>
+                  )}
+                  <th className="px-4 py-3 font-medium">Suggested CPT</th>
+                  <th className="px-4 py-3 font-medium">Facility</th>
                   <th className="px-4 py-3 font-medium">Type</th>
-                  <th className="px-4 py-3 font-medium">Description</th>
                   <th className="px-4 py-3 font-medium text-right">Reports</th>
                   <th className="px-4 py-3 font-medium text-right">Lines</th>
                   <th className="px-4 py-3 font-medium"></th>
@@ -277,32 +390,72 @@ export default function UnmappedCodesPage() {
               <tbody>
                 {report.isLoading ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center">
+                    <td colSpan={8} className="px-4 py-10 text-center">
                       <Spinner size={20} />
                     </td>
                   </tr>
                 ) : codes.length === 0 ? (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-[color:var(--color-muted-fg)]">
+                    <td colSpan={8} className="px-4 py-10 text-center text-sm text-[color:var(--color-muted-fg)]">
                       Nothing unmapped in this window — every signed code matched the master.
                     </td>
                   </tr>
+                ) : filteredCodes.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="px-4 py-10 text-center text-sm text-[color:var(--color-muted-fg)]">
+                      No codes match your search or facility filter.
+                    </td>
+                  </tr>
                 ) : (
-                  codes.map((c) => {
+                  filteredCodes.map((c) => {
                     const isCpt = c.kind === "cpt_missing_from_master";
+                    const counts = rowCounts(c, facility);
+                    const descCell = (
+                      <td className="px-4 py-3 text-[color:var(--color-muted-fg)]">
+                        {c.description || "—"}
+                      </td>
+                    );
+                    const codeCell = <td className="px-4 py-3 font-mono text-xs">{c.code}</td>;
                     return (
                       <tr key={`${c.year}-${c.code}`} className="border-t border-[color:var(--color-border)]">
-                        <td className="px-4 py-3 font-mono">{c.code}</td>
+                        {view === "desc" ? (
+                          <>
+                            {descCell}
+                            {codeCell}
+                          </>
+                        ) : (
+                          <>
+                            {codeCell}
+                            {descCell}
+                          </>
+                        )}
+                        <td className="px-4 py-3">
+                          {c.suggestedCpt ? (
+                            <span
+                              className="inline-flex flex-col leading-tight"
+                              title={c.suggestedCptDescription ?? undefined}
+                            >
+                              <span className="font-mono text-xs text-[color:var(--color-accent)]">
+                                {c.suggestedCpt}
+                              </span>
+                              <span className="text-[10px] tabular-nums text-[color:var(--color-muted-fg)]">
+                                RVU {c.suggestedWorkRvu?.toFixed(2) ?? "—"}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="text-[color:var(--color-muted-fg)]">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-xs" title={facilityTitle(c)}>
+                          {facilityLabel(c, facility)}
+                        </td>
                         <td className="px-4 py-3">
                           <Badge variant={isCpt ? "accent" : "caution"}>
                             {isCpt ? "Missing CPT" : "Non-CPT"}
                           </Badge>
                         </td>
-                        <td className="px-4 py-3 text-[color:var(--color-muted-fg)]">
-                          {c.description || "—"}
-                        </td>
-                        <td className="px-4 py-3 text-right tabular-nums">{c.reportCount}</td>
-                        <td className="px-4 py-3 text-right tabular-nums">{c.serviceLineCount}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{counts.reports}</td>
+                        <td className="px-4 py-3 text-right tabular-nums">{counts.lines}</td>
                         <td className="px-4 py-3 text-right">
                           <Button
                             variant="ghost"

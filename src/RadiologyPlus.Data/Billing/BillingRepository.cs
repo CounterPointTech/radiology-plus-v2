@@ -531,19 +531,27 @@ public sealed class BillingRepository : IBillingRepository
         if (source.Count == 0) return Array.Empty<UnmappedServiceCode>();
 
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
-        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
-        var years = source.Select(s => (short)s.SignedAt.Year).Distinct().ToArray();
-        var master = await LoadMasterForYearsAsync(conn, tx, tenantId, years, cancellationToken);
-        // Apply the crosswalk to the unmapped report as well, so codes with an
-        // approved mapping disappear from the list once the matcher would credit
-        // them. Suppressed (status=2) rows are absent from the dict and therefore
-        // stay on the report — exactly the desired semantics.
-        var crosswalk = await LoadCrosswalkAsync(conn, tx, tenantId, cancellationToken);
-        await tx.CommitAsync(cancellationToken);
+        MasterIndex master;
+        IReadOnlyDictionary<string, string> crosswalk;
+        Dictionary<string, long> facilityBySite;
+        await using (var tx = await conn.BeginTransactionAsync(cancellationToken))
+        {
+            var years = source.Select(s => (short)s.SignedAt.Year).Distinct().ToArray();
+            master = await LoadMasterForYearsAsync(conn, tx, tenantId, years, cancellationToken);
+            // Apply the crosswalk to the unmapped report as well, so codes with an
+            // approved mapping disappear from the list once the matcher would credit
+            // them. Suppressed (status=2) rows are absent from the dict and therefore
+            // stay on the report — exactly the desired semantics.
+            crosswalk = await LoadCrosswalkAsync(conn, tx, tenantId, cancellationToken);
+            // site_code → facility_id so each per-site breakdown carries the local id
+            // (usually null — the customer's Novarad site_codes aren't all mapped).
+            facilityBySite = await LoadFacilityMapAsync(conn, tx, tenantId, cancellationToken);
+            await tx.CommitAsync(cancellationToken);
+        }
 
-        // Per uncredited (year, code): distinct contributing reports, service-line
-        // count, and a representative Novarad description.
-        var acc = new Dictionary<(short Year, string Code), (HashSet<long> Reports, int Lines, string? Desc)>();
+        // Per uncredited (year, code): distinct reports, line count, a representative
+        // Novarad description, and a per-site breakdown.
+        var acc = new Dictionary<(short Year, string Code), UnmappedAccum>();
 
         foreach (var procGroup in source.GroupBy(s => (s.ReportId, s.ProcedureId)))
         {
@@ -566,33 +574,158 @@ public sealed class BillingRepository : IBillingRepository
 
                 var key = (year, code);
                 if (!acc.TryGetValue(key, out var e))
-                    e = (new HashSet<long>(), 0, row.CptDescription);
+                    acc[key] = e = new UnmappedAccum();
                 e.Reports.Add(row.ReportId);
                 e.Lines += 1;
                 if (e.Desc is null && row.CptDescription is not null) e.Desc = row.CptDescription;
-                acc[key] = e;
+
+                if (!e.BySite.TryGetValue(row.SiteCode, out var site))
+                    e.BySite[row.SiteCode] = site = new UnmappedSiteAccum();
+                site.Reports.Add(row.ReportId);
+                site.Lines += 1;
             }
         }
+
+        if (acc.Count == 0) return Array.Empty<UnmappedServiceCode>();
+
+        // Best CPT-master match per distinct code (one batched query), surfaced inline
+        // so the user sees a candidate CPT + RVU without opening the Map dialog.
+        var suggestionByCode = await LoadBestSuggestionsAsync(conn, tenantId, master, acc, cancellationToken);
 
         return acc
             .Select(kv =>
             {
                 var (year, code) = kv.Key;
+                var a = kv.Value;
                 var looks = LooksLikeCpt(code);
+                var facilities = a.BySite
+                    .Select(s => new UnmappedFacilityBreakdown(
+                        SiteCode: s.Key,
+                        FacilityId: facilityBySite.TryGetValue(s.Key, out var fid) ? fid : null,
+                        ReportCount: s.Value.Reports.Count,
+                        ServiceLineCount: s.Value.Lines))
+                    .OrderByDescending(f => f.ReportCount)
+                    .ThenBy(f => f.SiteCode, StringComparer.Ordinal)
+                    .ToList();
+                suggestionByCode.TryGetValue(code, out var sug);
                 return new UnmappedServiceCode(
                     Code: code,
                     Year: year,
                     Kind: looks ? "cpt_missing_from_master" : "non_cpt_service_code",
-                    Description: kv.Value.Desc,
-                    ReportCount: kv.Value.Reports.Count,
-                    ServiceLineCount: kv.Value.Lines,
-                    LooksLikeCpt: looks);
+                    Description: a.Desc,
+                    ReportCount: a.Reports.Count,
+                    ServiceLineCount: a.Lines,
+                    LooksLikeCpt: looks,
+                    Facilities: facilities,
+                    SuggestedCpt: sug?.Cpt,
+                    SuggestedCptDescription: sug?.Description,
+                    SuggestedWorkRvu: sug?.WorkRvu,
+                    SuggestionHitKind: sug?.HitKind);
             })
             .OrderByDescending(u => u.ReportCount)
             .ThenByDescending(u => u.ServiceLineCount)
             .ThenBy(u => u.Code, StringComparer.Ordinal)
             .ToList();
     }
+
+    // Batched "best CPT-master match" for the unmapped report. One round-trip: for
+    // each distinct code, the exact suffix-stripped code hit (score 1.0) or the top
+    // pg_trgm description-similarity hit, evaluated against the latest master year.
+    private static async Task<Dictionary<string, SuggestionRow>> LoadBestSuggestionsAsync(
+        NpgsqlConnection conn,
+        Guid tenantId,
+        MasterIndex master,
+        Dictionary<(short Year, string Code), UnmappedAccum> acc,
+        CancellationToken ct)
+    {
+        var result = new Dictionary<string, SuggestionRow>(StringComparer.Ordinal);
+
+        // Latest year that actually has master rows; without a master there's nothing
+        // to suggest (mirrors SuggestCrosswalkAsync's MAX-year fallback).
+        short? year = master.Singletons.Keys.Select(k => (short?)k.Year)
+            .Concat(master.Bundles.Keys.Select(k => (short?)k.Year))
+            .DefaultIfEmpty(null)
+            .Max();
+        if (year is null) return result;
+
+        // One representative description + exact-match candidate per distinct code.
+        var byCode = new Dictionary<string, string?>(StringComparer.Ordinal);
+        foreach (var kv in acc)
+            if (!byCode.TryGetValue(kv.Key.Code, out var d) || d is null)
+                byCode[kv.Key.Code] = kv.Value.Desc;
+
+        var codes  = byCode.Keys.ToArray();
+        var exacts = codes.Select(ExactMatchCandidate).ToArray();
+        var descrs = codes.Select(c => byCode[c] ?? "").ToArray();
+
+        const decimal SimThreshold = 0.15m;
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT t.code, best.cpt_code, best.description, best.work_rvu, best.hit_kind
+            FROM UNNEST(@codes, @exacts, @descrs) AS t(code, exact, descr)
+            LEFT JOIN LATERAL (
+                SELECT c.cpt_code, c.description, c.work_rvu,
+                       CASE WHEN c.cpt_code = t.exact THEN 'exact_code' ELSE 'description' END AS hit_kind
+                FROM billing.cpt_codes c
+                WHERE c.tenant_id = @t AND c.year = @y AND c.is_active = TRUE
+                  AND (c.cpt_code = t.exact
+                       OR (NULLIF(t.descr, '') IS NOT NULL AND similarity(c.description, t.descr) >= @th))
+                ORDER BY (CASE WHEN c.cpt_code = t.exact THEN 1.0::real
+                               ELSE similarity(c.description, t.descr) END) DESC,
+                         c.cpt_code
+                LIMIT 1
+            ) best ON TRUE
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("y", year.Value);
+        cmd.Parameters.AddWithValue("th", SimThreshold);
+        cmd.Parameters.Add(new NpgsqlParameter("codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = codes });
+        cmd.Parameters.Add(new NpgsqlParameter("exacts", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = exacts });
+        cmd.Parameters.Add(new NpgsqlParameter("descrs", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = descrs });
+
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            if (rdr.IsDBNull(1)) continue;  // LEFT JOIN LATERAL miss → no match for this code
+            result[rdr.GetString(0)] = new SuggestionRow(
+                Cpt:         rdr.GetString(1),
+                Description: rdr.IsDBNull(2) ? null : rdr.GetString(2),
+                WorkRvu:     rdr.GetDecimal(3),
+                HitKind:     rdr.GetString(4));
+        }
+        return result;
+    }
+
+    // Suffix-strip an exact-match candidate (e.g. "71045-26" → "71045") only when the
+    // base looks like a CPT; otherwise the code itself (a Missing-CPT code won't be in
+    // the master, so the exact branch simply misses and description-similarity takes over).
+    private static string ExactMatchCandidate(string code)
+    {
+        var dash = code.IndexOf('-');
+        if (dash > 0)
+        {
+            var baseCode = code[..dash];
+            if (LooksLikeCpt(baseCode)) return baseCode;
+        }
+        return code;
+    }
+
+    private sealed class UnmappedAccum
+    {
+        public HashSet<long> Reports { get; } = new();
+        public int Lines { get; set; }
+        public string? Desc { get; set; }
+        public Dictionary<string, UnmappedSiteAccum> BySite { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class UnmappedSiteAccum
+    {
+        public HashSet<long> Reports { get; } = new();
+        public int Lines { get; set; }
+    }
+
+    private sealed record SuggestionRow(string Cpt, string? Description, decimal WorkRvu, string HitKind);
 
     // ========================================================================
     // Crosswalk (Phase 2): list / get / upsert / set-status / bulk / suggest

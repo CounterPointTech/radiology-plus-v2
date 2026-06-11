@@ -161,6 +161,13 @@ export interface ReconciliationLineDetailResponse {
   rows: ReconciliationDetailRow[];
 }
 
+export interface UnmappedFacilityBreakdown {
+  siteCode: string;
+  facilityId: number | null;
+  reportCount: number;
+  serviceLineCount: number;
+}
+
 export interface UnmappedServiceCode {
   code: string;
   year: number;
@@ -169,6 +176,11 @@ export interface UnmappedServiceCode {
   reportCount: number;
   serviceLineCount: number;
   looksLikeCpt: boolean;
+  facilities: UnmappedFacilityBreakdown[];
+  suggestedCpt: string | null;
+  suggestedCptDescription: string | null;
+  suggestedWorkRvu: number | null;
+  suggestionHitKind: string | null; // "exact_code" | "description"
 }
 
 export interface UnmappedCodesResponse {
