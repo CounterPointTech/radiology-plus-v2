@@ -62,6 +62,12 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
                     CPT master
                   </Link>
                   <Link
+                    href="/billing/rvu"
+                    className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
+                  >
+                    RVU values
+                  </Link>
+                  <Link
                     href="/billing/reconciliation"
                     className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
                   >

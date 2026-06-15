@@ -38,6 +38,11 @@ public static class BillingEndpoints
              .WithName("BillingImportRvu")
              .DisableAntiforgery();                      // bearer-token auth + same-origin CORS is our guard
         group.MapGet("/rvu", ListRvuValuesAsync).WithName("BillingListRvu");
+        group.MapGet("/rvu/imports", ListRvuImportsAsync).WithName("BillingListRvuImports");
+        group.MapGet("/rvu/overrides", ListRvuOverridesAsync).WithName("BillingListRvuOverrides");
+        group.MapPut("/rvu/overrides/{code}", UpsertRvuOverrideAsync).WithName("BillingUpsertRvuOverride");
+        group.MapDelete("/rvu/overrides/{code}", DeleteRvuOverrideAsync).WithName("BillingDeleteRvuOverride");
+        group.MapGet("/cpt-master/cms-check", CptMasterCmsCheckAsync).WithName("BillingCptMasterCmsCheck");
         group.MapGet("/reconciliation/preview", PreviewReconciliationAsync).WithName("BillingReconciliationPreview");
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
@@ -434,6 +439,117 @@ public static class BillingEndpoints
         return Results.Ok(rows);
     }
 
+    [Authorize]
+    private static async Task<IResult> ListRvuImportsAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var rows = await repo.ListRecentRvuImportsAsync(
+            user.TenantId, Math.Clamp(limit ?? 25, 1, 200), ct);
+        return Results.Ok(rows);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListRvuOverridesAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] short? year,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var rows = await repo.ListRvuOverridesAsync(user.TenantId, year, ct);
+        return Results.Ok(rows);
+    }
+
+    [Authorize]
+    private static async Task<IResult> UpsertRvuOverrideAsync(
+        string code,
+        RvuOverrideRequest req,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IAccessAuditWriter audit,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        if (req is null) return Results.BadRequest(new { error = "Request body is required." });
+        if (string.IsNullOrWhiteSpace(code)) return Results.BadRequest(new { error = "code is required." });
+        if (req.Year is < 2000 or > 2100)
+            return Results.BadRequest(new { error = "year must be between 2000 and 2100." });
+        if (req.OverrideWorkRvu < 0)
+            return Results.BadRequest(new { error = "overrideWorkRvu must be non-negative." });
+        // numeric(8,4): max magnitude is 9999.9999. Reject out-of-range up front so the
+        // INSERT doesn't throw a numeric overflow mid-request.
+        if (req.OverrideWorkRvu > 9999.9999m)
+            return Results.BadRequest(new { error = "overrideWorkRvu exceeds the numeric(8,4) maximum (9999.9999)." });
+
+        var upsert = new RvuOverrideUpsert(req.Year, code, req.OverrideWorkRvu, req.Note);
+        var result = await repo.UpsertRvuOverrideAsync(user.TenantId, user.UserId, upsert, ct);
+
+        await audit.WriteSuccessAsync(
+            user.TenantId, user, result.Inserted ? AccessAction.Create : AccessAction.Update,
+            $"billing.rvu_overrides {result.Override.Year}/{result.Override.Code} " +
+                $"= {result.Override.OverrideWorkRvu} work RVU (tenant-wide)",
+            http, ct);
+
+        return Results.Ok(result.Override);
+    }
+
+    [Authorize]
+    private static async Task<IResult> DeleteRvuOverrideAsync(
+        string code,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IAccessAuditWriter audit,
+        HttpContext http,
+        [FromQuery] short? year,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        if (year is null)
+            return Results.BadRequest(new { error = "year query parameter is required." });
+
+        var removed = await repo.DeleteRvuOverrideAsync(user.TenantId, year.Value, code, ct);
+        if (!removed)
+            return Results.NotFound(new { error = $"No tenant-wide override for {year}/{code}." });
+
+        await audit.WriteSuccessAsync(
+            user.TenantId, user, AccessAction.Delete,
+            $"billing.rvu_overrides {year}/{code} removed (tenant-wide)",
+            http, ct);
+
+        return Results.NoContent();
+    }
+
+    [Authorize]
+    private static async Task<IResult> CptMasterCmsCheckAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] short? year,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var rows = await repo.ListCptMasterCmsAsync(
+            user.TenantId,
+            year ?? (short)DateTime.Now.Year,
+            Math.Clamp(limit ?? 2000, 1, 5000),
+            ct);
+        return Results.Ok(rows);
+    }
+
     // ========================================================================
     // Phase 2 — service_code → CPT crosswalk
     // ========================================================================
@@ -644,6 +760,11 @@ public sealed record PatchCptCodeRequest(
     decimal? WorkRvu,
     string? Description,
     string? Notes);
+
+public sealed record RvuOverrideRequest(
+    short Year,
+    decimal OverrideWorkRvu,
+    string? Note);
 
 public sealed record RunReconciliationRequest(
     DateTimeOffset From,

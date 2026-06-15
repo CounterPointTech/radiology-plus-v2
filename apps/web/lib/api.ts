@@ -7,6 +7,7 @@ import type {
   ComparisonCandidate,
   CptCode,
   CptImport,
+  CptMasterCmsRow,
   CrosswalkBulkImportRequest,
   CrosswalkListResponse,
   CrosswalkSuggestionsResponse,
@@ -19,6 +20,10 @@ import type {
   ReconciliationLineDetailResponse,
   ReconciliationRun,
   RunReconciliationRequest,
+  RvuImport,
+  RvuOverride,
+  RvuOverrideRequest,
+  RvuValue,
   StudyMergeOutcome,
   StudyMergeRequest,
   ServiceCodeMapping,
@@ -155,6 +160,60 @@ export const billingApi = {
       { params, headers: { "Content-Type": "multipart/form-data" } },
     );
     return res.data;
+  },
+
+  // ------------------------------------------------------------------------
+  // CMS RVU values (billing.rvu_values) + manual overrides — item 1.2
+  // ------------------------------------------------------------------------
+
+  listRvuValues(params: {
+    year?: number;
+    quarter?: string;
+    q?: string;
+    limit?: number;
+  }) {
+    return get<RvuValue[]>("/billing/rvu", params);
+  },
+
+  listRvuImports(limit = 5) {
+    return get<RvuImport[]>("/billing/rvu/imports", { limit });
+  },
+
+  /**
+   * Multipart upload of a CMS PPRRVU zip (or bare csv). Raw FormData so axios sets
+   * the multipart boundary; mirrors importCptMaster.
+   */
+  async importRvu(file: File, year: number, quarter: string) {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await apiClient.post<RvuImport>("/billing/rvu/import", form, {
+      params: { year, quarter },
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return res.data;
+  },
+
+  listRvuOverrides(params?: { year?: number }) {
+    return get<RvuOverride[]>("/billing/rvu/overrides", params);
+  },
+
+  async upsertRvuOverride(code: string, body: RvuOverrideRequest) {
+    const res = await apiClient.put<RvuOverride>(
+      `/billing/rvu/overrides/${encodeURIComponent(code)}`,
+      body,
+    );
+    return res.data;
+  },
+
+  async deleteRvuOverride(code: string, year: number) {
+    await apiClient.delete(`/billing/rvu/overrides/${encodeURIComponent(code)}`, {
+      params: { year },
+    });
+  },
+
+  /** CPT master joined to CMS truth for the management view's "CMS check" surface. */
+  cptMasterCmsCheck(params: { year: number; limit?: number }) {
+    return get<CptMasterCmsRow[]>("/billing/cpt-master/cms-check", params);
   },
 
   runReconciliation(req: RunReconciliationRequest) {

@@ -28,8 +28,14 @@ public interface IBillingRepository
         int limit,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Latest N import-run audit rows for a tenant.</summary>
+    /// <summary>Latest N CPT-master import-run audit rows for a tenant.</summary>
     Task<IReadOnlyList<CptImport>> ListRecentImportsAsync(
+        Guid tenantId,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Latest N CMS RVU import-run audit rows for a tenant.</summary>
+    Task<IReadOnlyList<RvuImport>> ListRecentRvuImportsAsync(
         Guid tenantId,
         int limit,
         CancellationToken cancellationToken = default);
@@ -58,6 +64,49 @@ public interface IBillingRepository
         short? year,
         char? quarter,
         string? search,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// List the tenant-wide manual RVU overrides (facility_id IS NULL), optionally scoped
+    /// to a year. Read-only; backs the RVU management view's override list.
+    /// </summary>
+    Task<IReadOnlyList<RvuOverride>> ListRvuOverridesAsync(
+        Guid tenantId,
+        short? year,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Insert-or-update a tenant-wide manual RVU override for (year, code). Returns the
+    /// persisted row + whether it was an insert, so the caller can emit Create vs Update
+    /// audit. Conflict target is the partial unique index on
+    /// (tenant_id, year, cpt_code) WHERE facility_id IS NULL.
+    /// </summary>
+    Task<RvuOverrideUpsertResult> UpsertRvuOverrideAsync(
+        Guid tenantId,
+        Guid userId,
+        RvuOverrideUpsert upsert,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Delete the tenant-wide manual RVU override for (year, code). Returns false when no
+    /// such override existed (so the caller can 404).
+    /// </summary>
+    Task<bool> DeleteRvuOverrideAsync(
+        Guid tenantId,
+        short year,
+        string code,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Join the CPT master for a year to the CMS source of truth for the management view's
+    /// "CMS check" surface: per code, the master's curated RVU vs. CMS (per-HCPCS for singles,
+    /// summed components for bundles), the tenant-wide override if any, the effective RVU
+    /// reconciliation would credit, and a reconciliation verdict. Read-only.
+    /// </summary>
+    Task<IReadOnlyList<CptMasterCmsRow>> ListCptMasterCmsAsync(
+        Guid tenantId,
+        short year,
         int limit,
         CancellationToken cancellationToken = default);
 

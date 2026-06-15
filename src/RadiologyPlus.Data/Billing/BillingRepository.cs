@@ -366,6 +366,268 @@ public sealed class BillingRepository : IBillingRepository
         return result;
     }
 
+    // ------------------------------------------------------------------------
+    // Item 1.2 (mgmt UI) — manual RVU overrides + the CMS-check management view.
+    // ------------------------------------------------------------------------
+
+    public async Task<IReadOnlyList<RvuOverride>> ListRvuOverridesAsync(
+        Guid tenantId, short? year, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"""
+            SELECT override_id, year, cpt_code, facility_id, override_work_rvu, note,
+                   created_by_user_id, created_at, updated_at
+            FROM billing.rvu_overrides
+            WHERE tenant_id = @t
+              {(year is null ? "" : "AND year = @year")}
+              AND facility_id IS NULL
+            ORDER BY year DESC, cpt_code
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        if (year is not null) cmd.Parameters.AddWithValue("year", year.Value);
+
+        var result = new List<RvuOverride>();
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await rdr.ReadAsync(cancellationToken))
+            result.Add(ReadOverride(rdr));
+        return result;
+    }
+
+    public async Task<RvuOverrideUpsertResult> UpsertRvuOverrideAsync(
+        Guid tenantId, Guid userId, RvuOverrideUpsert upsert, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(upsert);
+        var raw = upsert.Code?.Trim() ?? "";
+        if (raw.Length == 0)
+            throw new ArgumentException("Override code must be non-empty.", nameof(upsert));
+        // Canonicalize a bundle to its sorted/deduped set-key (a single to NormalizeCpt) so
+        // storage, the unique index, the reconciliation overlay, the cms-check display, and
+        // DELETE all agree on one spelling. Otherwise "A;B" and "B;A" insert as distinct rows
+        // yet collapse to the same bundle in the credit path — a non-deterministic credit.
+        var code = raw.Contains(';')
+            ? NormalizeCptSetKey(raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            : NormalizeCpt(raw);
+        if (upsert.OverrideWorkRvu < 0)
+            throw new ArgumentOutOfRangeException(nameof(upsert), upsert.OverrideWorkRvu, "override_work_rvu must be non-negative.");
+
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // Conflict target is the partial unique index uq_rvu_override_tenant_year_cpt_all
+        // (tenant_id, year, cpt_code) WHERE facility_id IS NULL. (xmax = 0) distinguishes
+        // an insert from an update for the audit action. created_by_user_id is set once.
+        cmd.CommandText = """
+            INSERT INTO billing.rvu_overrides
+                (tenant_id, year, cpt_code, facility_id, override_work_rvu, note, created_by_user_id)
+            VALUES (@t, @year, @code, NULL, @work, @note, @user)
+            ON CONFLICT (tenant_id, year, cpt_code) WHERE facility_id IS NULL
+            DO UPDATE SET override_work_rvu = EXCLUDED.override_work_rvu,
+                          -- Preserve an existing note when the caller omits one (the inline
+                          -- RVU edit sends no note); only overwrite when a note is supplied.
+                          note              = COALESCE(EXCLUDED.note, billing.rvu_overrides.note),
+                          updated_at        = NOW()
+            RETURNING override_id, year, cpt_code, facility_id, override_work_rvu, note,
+                      created_by_user_id, created_at, updated_at, (xmax = 0) AS inserted
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("year", upsert.Year);
+        cmd.Parameters.AddWithValue("code", code);
+        cmd.Parameters.Add(new NpgsqlParameter("work", NpgsqlDbType.Numeric) { Value = upsert.OverrideWorkRvu });
+        cmd.Parameters.AddWithValue("note", (object?)upsert.Note ?? DBNull.Value);
+        cmd.Parameters.AddWithValue("user", userId);
+
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        if (!await rdr.ReadAsync(cancellationToken))
+            throw new InvalidOperationException("rvu_overrides upsert returned no row.");
+        var row = ReadOverride(rdr);
+        var inserted = rdr.GetBoolean(9);
+        return new RvuOverrideUpsertResult(row, inserted);
+    }
+
+    public async Task<bool> DeleteRvuOverrideAsync(
+        Guid tenantId, short year, string code, CancellationToken cancellationToken = default)
+    {
+        // Canonicalize the same way Upsert stores it, so a delete targets the stored row even
+        // when the caller passes a different bundle component order/case.
+        var raw = code?.Trim() ?? "";
+        var normalized = raw.Contains(';')
+            ? NormalizeCptSetKey(raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            : NormalizeCpt(raw);
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            DELETE FROM billing.rvu_overrides
+            WHERE tenant_id = @t AND year = @year AND cpt_code = @code AND facility_id IS NULL
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("year", year);
+        cmd.Parameters.AddWithValue("code", normalized);
+        var affected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+        return affected > 0;
+    }
+
+    public async Task<IReadOnlyList<CptMasterCmsRow>> ListCptMasterCmsAsync(
+        Guid tenantId, short year, int limit, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+
+        // Effective RVU comes straight from the credit path's overlay so the management
+        // view's "Effective" column can never disagree with what reconciliation credits.
+        var master = await LoadMasterForYearsAsync(conn, tx, tenantId, new[] { year }, cancellationToken);
+
+        // The CPT master's curated base rows (the display list). Each reader scoped in its own
+        // block — Npgsql permits one active reader per connection.
+        var amber = new List<(string Code, string Description, decimal Work)>();
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                SELECT cpt_code, description, work_rvu
+                FROM billing.cpt_codes
+                WHERE tenant_id = @t AND year = @year AND is_active = TRUE
+                ORDER BY cpt_code
+                LIMIT @limit
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("year", year);
+            cmd.Parameters.AddWithValue("limit", limit);
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+                amber.Add((rdr.GetString(0), rdr.GetString(1), rdr.GetDecimal(2)));
+        }
+
+        // Raw CMS per-HCPCS truth: latest quarter, global modifier, ALL statuses (so we can
+        // tell "status-gated" apart from "differs"). Keyed by normalized HCPCS.
+        var cms = new Dictionary<string, (decimal Work, string? Status)>(StringComparer.Ordinal);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                SELECT DISTINCT ON (hcpcs) hcpcs, work_rvu, status_code
+                FROM billing.rvu_values
+                WHERE tenant_id = @t AND year = @year AND modifier = ''
+                ORDER BY hcpcs, quarter DESC
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("year", year);
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+                cms[NormalizeCpt(rdr.GetString(0))] = (rdr.GetDecimal(1), rdr.IsDBNull(2) ? null : rdr.GetString(2));
+        }
+
+        // Tenant-wide overrides, keyed by normalized code (single HCPCS or bundle string).
+        var overrides = new Dictionary<string, decimal>(StringComparer.Ordinal);
+        await using (var cmd = conn.CreateCommand())
+        {
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                SELECT cpt_code, override_work_rvu
+                FROM billing.rvu_overrides
+                WHERE tenant_id = @t AND year = @year AND facility_id IS NULL
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("year", year);
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+            {
+                // Key by the same canonical form the credit path uses (set-key for bundles)
+                // so the display matches whatever reconciliation credits. Re-canonicalize on
+                // read too, in case a legacy row was stored before write-canonicalization.
+                var oc = rdr.GetString(0);
+                var okey = oc.Contains(';')
+                    ? NormalizeCptSetKey(oc.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                    : NormalizeCpt(oc);
+                overrides[okey] = rdr.GetDecimal(1);
+            }
+        }
+
+        await tx.CommitAsync(cancellationToken);
+
+        var rows = new List<CptMasterCmsRow>(amber.Count);
+        foreach (var (code, description, masterWork) in amber)
+        {
+            var isBundle = code.Contains(';');
+            var normalized = NormalizeCpt(code);
+            var parts = isBundle
+                ? code.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+                : null;
+            var setKey = isBundle ? NormalizeCptSetKey(parts!) : null;
+
+            // Look up the override by the SAME key the credit path uses — set-key for a bundle,
+            // NormalizeCpt for a single — so the Override column never reads null while the
+            // override is in effect (and being credited via EffectiveWorkRvu).
+            var overrideKey = setKey ?? normalized;
+            decimal? overrideRvu = overrides.TryGetValue(overrideKey, out var ov) ? ov : null;
+
+            decimal effective;
+            decimal? cmsRvu = null;
+            string? cmsStatus = null;
+            int? bundleParts = null, bundleMatched = null;
+            string verdict;
+
+            if (!isBundle)
+            {
+                effective = master.Singletons.TryGetValue((year, normalized), out var m) ? m.WorkRvu : masterWork;
+                if (cms.TryGetValue(normalized, out var c))
+                {
+                    cmsRvu = c.Work;
+                    cmsStatus = c.Status;
+                    // Mirror the credit overlay's gate exactly (status 'A' AND work > 0). A
+                    // status-'A' row with work 0 is NOT overlaid, so don't imply CMS drives the
+                    // credit — label it gated like the other non-credited rows.
+                    verdict = (!string.Equals(c.Status, "A", StringComparison.OrdinalIgnoreCase) || c.Work <= 0m)
+                        ? "status_gated"
+                        : c.Work == masterWork ? "matches" : "differs";
+                }
+                else
+                {
+                    verdict = "not_in_cms";
+                }
+            }
+            else
+            {
+                bundleParts = parts!.Length;
+                decimal sum = 0m;
+                int matched = 0;
+                foreach (var p in parts!)
+                    if (cms.TryGetValue(NormalizeCpt(p), out var c)) { sum += c.Work; matched++; }
+                bundleMatched = matched;
+
+                effective = master.Bundles.TryGetValue((year, setKey!), out var mb) ? mb.WorkRvu : masterWork;
+
+                if (matched < parts!.Length)
+                {
+                    cmsRvu = matched > 0 ? sum : null;
+                    verdict = "partial";
+                }
+                else
+                {
+                    cmsRvu = sum;
+                    verdict = sum == masterWork ? "matches_sum" : "differs_sum";
+                }
+            }
+
+            rows.Add(new CptMasterCmsRow(
+                Year: year, Code: code, IsBundle: isBundle, Description: description,
+                MasterWorkRvu: masterWork, CmsWorkRvu: cmsRvu, CmsStatus: cmsStatus,
+                BundleParts: bundleParts, BundleMatched: bundleMatched,
+                OverrideWorkRvu: overrideRvu, EffectiveWorkRvu: effective, Verdict: verdict));
+        }
+        return rows;
+    }
+
+    private static RvuOverride ReadOverride(NpgsqlDataReader rdr) => new(
+        OverrideId:      rdr.GetInt64(0),
+        Year:            rdr.GetInt16(1),
+        Code:            rdr.GetString(2),
+        FacilityId:      rdr.IsDBNull(3) ? null : rdr.GetInt64(3),
+        OverrideWorkRvu: rdr.GetDecimal(4),
+        Note:            rdr.IsDBNull(5) ? null : rdr.GetString(5),
+        CreatedByUserId: rdr.IsDBNull(6) ? null : rdr.GetGuid(6),
+        CreatedAt:       new DateTimeOffset(rdr.GetDateTime(7), TimeSpan.Zero),
+        UpdatedAt:       new DateTimeOffset(rdr.GetDateTime(8), TimeSpan.Zero));
+
     public async Task<IReadOnlyList<CptCode>> ListCptCodesAsync(
         Guid tenantId, short year, string? search, int limit, CancellationToken cancellationToken = default)
     {
@@ -541,6 +803,45 @@ public sealed class BillingRepository : IBillingRepository
                 FileName: reader.GetString(1),
                 SheetName: reader.GetString(2),
                 Year: reader.GetInt16(3),
+                ParsedRows: reader.GetInt32(4),
+                InsertedRows: reader.GetInt32(5),
+                UpdatedRows: reader.GetInt32(6),
+                SkippedRows: reader.GetInt32(7),
+                Errors: errors,
+                RanByUserId: reader.GetGuid(9),
+                RanAt: new DateTimeOffset(reader.GetDateTime(10), TimeSpan.Zero)));
+        }
+        return result;
+    }
+
+    public async Task<IReadOnlyList<RvuImport>> ListRecentRvuImportsAsync(
+        Guid tenantId, int limit, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT import_id, file_name, year, quarter,
+                   parsed_rows, inserted_rows, updated_rows, skipped_rows,
+                   errors, ran_by_user_id, ran_at
+            FROM billing.rvu_imports
+            WHERE tenant_id = @t
+            ORDER BY ran_at DESC
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("limit", limit);
+
+        var result = new List<RvuImport>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var errorsRaw = reader.IsDBNull(8) ? "[]" : reader.GetString(8);
+            var errors = JsonSerializer.Deserialize<List<CptImportError>>(errorsRaw) ?? new();
+            result.Add(new RvuImport(
+                ImportId: reader.GetInt64(0),
+                FileName: reader.GetString(1),
+                Year: reader.GetInt16(2),
+                Quarter: reader.GetString(3)[0],
                 ParsedRows: reader.GetInt32(4),
                 InsertedRows: reader.GetInt32(5),
                 UpdatedRows: reader.GetInt32(6),
@@ -1601,14 +1902,33 @@ public sealed class BillingRepository : IBillingRepository
             while (await ordr.ReadAsync(ct))
             {
                 var y = ordr.GetInt16(0);
-                var code = NormalizeCpt(ordr.GetString(1));
+                var raw = ordr.GetString(1);
                 var work = ordr.GetDecimal(2);
-                var key = (y, code);
-                singletons[key] = singletons.TryGetValue(key, out var existing)
-                    ? existing with { WorkRvu = work }
-                    : new CptCode(y, code, code, work, Notes: "override",
-                        IsActive: true, ImportedFromImportId: null,
-                        CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+                if (raw.Contains(';'))
+                {
+                    // Bundle override: match the bundle dict by its normalized set-key
+                    // (component order/case/dupes washed out) so a ;-delimited override
+                    // actually lands. Previously the override only ever wrote `singletons`,
+                    // so a bundle override silently did nothing.
+                    var parts = raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    var setKey = NormalizeCptSetKey(parts);
+                    var bkey = (y, setKey);
+                    bundles[bkey] = bundles.TryGetValue(bkey, out var bexisting)
+                        ? bexisting with { WorkRvu = work }
+                        : new CptCode(y, raw, raw, work, Notes: "override",
+                            IsActive: true, ImportedFromImportId: null,
+                            CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+                }
+                else
+                {
+                    var code = NormalizeCpt(raw);
+                    var key = (y, code);
+                    singletons[key] = singletons.TryGetValue(key, out var existing)
+                        ? existing with { WorkRvu = work }
+                        : new CptCode(y, code, code, work, Notes: "override",
+                            IsActive: true, ImportedFromImportId: null,
+                            CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+                }
             }
         }
 

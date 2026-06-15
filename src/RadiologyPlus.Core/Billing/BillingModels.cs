@@ -104,6 +104,47 @@ public sealed record RvuImport(
     Guid RanByUserId,
     DateTimeOffset RanAt);
 
+/// <summary>
+/// Write-shape for upserting a tenant-wide manual RVU override (the top layer of the
+/// rvu_overrides → rvu_values → cpt_codes precedence). <c>Code</c> may be a single
+/// HCPCS or a <c>;</c>-delimited bundle string — both resolve in the reconciliation
+/// overlay. Facility-specific overrides aren't surfaced yet (reconciliation aggregates
+/// per site), so every override created here is tenant-wide (facility_id NULL).
+/// </summary>
+public sealed record RvuOverrideUpsert(
+    short Year,
+    string Code,
+    decimal OverrideWorkRvu,
+    string? Note);
+
+/// <summary>Result of <c>UpsertRvuOverrideAsync</c>: the persisted row + whether it was an insert.</summary>
+public sealed record RvuOverrideUpsertResult(RvuOverride Override, bool Inserted);
+
+/// <summary>
+/// One CPT-master row joined to the CMS source of truth, for the RVU management view's
+/// "CMS check" surface. For a single code, <c>CmsWorkRvu</c> is the CMS PPRRVU work RVU
+/// (modifier '', latest loaded quarter). For a bundle, it's the SUM of the CMS work RVUs
+/// of its <c>;</c>-split components, with <c>BundleParts</c>/<c>BundleMatched</c>
+/// describing coverage. <c>EffectiveWorkRvu</c> is exactly what reconciliation would
+/// credit (override → CMS → master), taken from the same overlay the credit path uses, so
+/// the UI never shows a number that disagrees with reconciliation. <c>Verdict</c> is one
+/// of: <c>matches</c> | <c>differs</c> | <c>not_in_cms</c> | <c>status_gated</c> (single);
+/// <c>matches_sum</c> | <c>differs_sum</c> | <c>partial</c> (bundle).
+/// </summary>
+public sealed record CptMasterCmsRow(
+    short Year,
+    string Code,
+    bool IsBundle,
+    string Description,
+    decimal MasterWorkRvu,
+    decimal? CmsWorkRvu,
+    string? CmsStatus,
+    int? BundleParts,
+    int? BundleMatched,
+    decimal? OverrideWorkRvu,
+    decimal EffectiveWorkRvu,
+    string Verdict);
+
 // ============================================================================
 // Phase 2 — service_code → CPT crosswalk
 // ============================================================================

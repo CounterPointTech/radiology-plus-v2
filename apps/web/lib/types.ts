@@ -73,6 +73,92 @@ export interface CptImport {
   ranAt: string;
 }
 
+// ---------------------------------------------------------------------------
+// CMS RVU source-of-truth (billing.rvu_values) + manual overrides — item 1.2
+// Mirror of RadiologyPlus.Core/Billing/BillingModels.cs. `quarter` is a single
+// char ("A"|"B"|"C"|"D"); date/decimal/timestamps serialize as string/number/string.
+// ---------------------------------------------------------------------------
+
+export type RvuQuarter = "A" | "B" | "C" | "D";
+
+export interface RvuValue {
+  year: number;
+  quarter: RvuQuarter;
+  hcpcs: string;
+  modifier: string; // "" global · "26" professional · "TC" technical
+  description: string | null;
+  workRvu: number;
+  peRvuNonFac: number | null;
+  peRvuFac: number | null;
+  mpRvu: number | null;
+  totalNonFac: number | null;
+  totalFac: number | null;
+  statusCode: string | null; // CMS status indicator: "A" active, etc.
+  globalDays: string | null;
+  effectiveFrom: string | null; // yyyy-MM-dd
+  sourceImportId: number | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RvuImport {
+  importId: number;
+  fileName: string;
+  year: number;
+  quarter: RvuQuarter;
+  parsedRows: number;
+  insertedRows: number;
+  updatedRows: number;
+  skippedRows: number;
+  errors: CptImportError[];
+  ranByUserId: string;
+  ranAt: string;
+}
+
+export interface RvuOverride {
+  overrideId: number;
+  year: number;
+  code: string; // single HCPCS or ";"-delimited bundle
+  facilityId: number | null; // always null (tenant-wide) from the management UI
+  overrideWorkRvu: number;
+  note: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RvuOverrideRequest {
+  year: number;
+  overrideWorkRvu: number;
+  note?: string | null;
+}
+
+// Verdict comparing a CPT-master row to CMS. Singles: matches | differs |
+// not_in_cms | status_gated. Bundles: matches_sum | differs_sum | partial.
+export type CmsCheckVerdict =
+  | "matches"
+  | "differs"
+  | "not_in_cms"
+  | "status_gated"
+  | "matches_sum"
+  | "differs_sum"
+  | "partial";
+
+export interface CptMasterCmsRow {
+  year: number;
+  code: string;
+  isBundle: boolean;
+  description: string;
+  masterWorkRvu: number; // the CPT master / imported sheet's work RVU
+  cmsWorkRvu: number | null; // single: CMS work RVU · bundle: sum of components
+  cmsStatus: string | null; // single only
+  bundleParts: number | null; // bundle only
+  bundleMatched: number | null; // bundle only
+  overrideWorkRvu: number | null;
+  effectiveWorkRvu: number; // what reconciliation actually credits
+  verdict: CmsCheckVerdict;
+}
+
 // Reconciliation — mirror of RadiologyPlus.Core/Billing/IBillingRepository.cs.
 // `cptCode` is a bundle string (e.g. "70492;71270;74178") when the line credits
 // a bundle row; otherwise a single CPT.
