@@ -234,6 +234,17 @@ export default function UnmappedCodesPage() {
     return true;
   });
 
+  // Headline counts reflect the active filter (facility + search). Reports are summed
+  // via rowCounts so a facility filter counts only that site's reports. In this data a
+  // report maps to exactly one unmapped code (sum of per-code counts == the server's
+  // distinct total), so the sum is the exact distinct count — worst case (a report
+  // carrying two unmapped codes) it's a marginal overcount, never under.
+  const shownCodes = filteredCodes.length;
+  const shownReports = filteredCodes.reduce(
+    (sum, c) => sum + rowCounts(c, facility).reports,
+    0,
+  );
+
   const totalsRows = mappingsTotals.data?.rows ?? [];
   const approvedCount = totalsRows.filter((m) => m.status === 1).length;
   const suppressedCount = totalsRows.filter((m) => m.status === 2).length;
@@ -300,17 +311,10 @@ export default function UnmappedCodesPage() {
       {data ? (
         <div className="flex flex-wrap items-end justify-between gap-3">
           <p className="text-sm text-[color:var(--color-muted-fg)]">
-            <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalCodes}</span>{" "}
-            unmapped code{data.totalCodes === 1 ? "" : "s"} ·{" "}
-            <span className="font-medium text-[color:var(--color-base-fg)]">{data.totalReportsUncredited}</span>{" "}
-            report{data.totalReportsUncredited === 1 ? "" : "s"} uncredited
-            {filteredCodes.length !== codes.length ? (
-              <>
-                {" "}·{" "}
-                <span className="font-medium text-[color:var(--color-base-fg)]">{filteredCodes.length}</span>{" "}
-                shown
-              </>
-            ) : null}
+            <span className="font-medium text-[color:var(--color-base-fg)]">{shownCodes}</span>{" "}
+            unmapped code{shownCodes === 1 ? "" : "s"} ·{" "}
+            <span className="font-medium text-[color:var(--color-base-fg)]">{shownReports}</span>{" "}
+            report{shownReports === 1 ? "" : "s"} uncredited
           </p>
           <div className="flex flex-wrap items-center gap-2">
             {/* Description-first (default) vs CPT-first column order */}

@@ -49,6 +49,62 @@ public sealed record CptCodeUpsert(
     string? Notes);
 
 // ============================================================================
+// Item 1.2 — CMS RVU source-of-truth (billing.rvu_values)
+// ============================================================================
+
+/// <summary>
+/// One row of the per-tenant CMS PFS Relative Value snapshot (PPRRVU). A HCPCS can
+/// carry up to three rows by <c>Modifier</c>: '' (global), '26' (professional),
+/// 'TC' (technical). <c>WorkRvu</c> is the figure reconciliation credits against.
+/// </summary>
+public sealed record RvuValue(
+    short Year,
+    char Quarter,
+    string Hcpcs,
+    string Modifier,
+    string? Description,
+    decimal WorkRvu,
+    decimal? PeRvuNonFac,
+    decimal? PeRvuFac,
+    decimal? MpRvu,
+    decimal? TotalNonFac,
+    decimal? TotalFac,
+    string? StatusCode,
+    string? GlobalDays,
+    DateOnly? EffectiveFrom,
+    long? SourceImportId,
+    DateTimeOffset CreatedAt,
+    DateTimeOffset UpdatedAt);
+
+/// <summary>Per-row payload the CMS importer hands to the repository.</summary>
+public sealed record RvuValueUpsert(
+    string Hcpcs,
+    string Modifier,
+    string? Description,
+    decimal WorkRvu,
+    decimal? PeRvuNonFac,
+    decimal? PeRvuFac,
+    decimal? MpRvu,
+    decimal? TotalNonFac,
+    decimal? TotalFac,
+    string? StatusCode,
+    string? GlobalDays);
+
+/// <summary>Header for a single CMS RVU import run (mirror of <see cref="CptImport"/>).</summary>
+public sealed record RvuImport(
+    long ImportId,
+    string FileName,
+    short Year,
+    char Quarter,
+    int ParsedRows,
+    int InsertedRows,
+    int UpdatedRows,
+    int SkippedRows,
+    IReadOnlyList<CptImportError> Errors,
+    Guid RanByUserId,
+    DateTimeOffset RanAt);
+
+// ============================================================================
 // Phase 2 — service_code → CPT crosswalk
 // ============================================================================
 

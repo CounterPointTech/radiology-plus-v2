@@ -35,6 +35,33 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Atomically insert a billing.rvu_imports header, bulk-upsert the parsed CMS
+    /// PPRRVU rows into billing.rvu_values for (tenant, year, quarter), and update the
+    /// header counts. Mirrors <see cref="ImportCptMasterAsync"/>. Returns the header.
+    /// </summary>
+    Task<RvuImport> ImportRvuValuesAsync(
+        Guid tenantId,
+        Guid runByUserId,
+        string fileName,
+        short year,
+        char quarter,
+        IReadOnlyList<RvuValueUpsert> rows,
+        IReadOnlyList<CptImportError> parseErrors,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// List/search the CMS RVU snapshot for a tenant. Optional year/quarter scope and
+    /// a fuzzy match over HCPCS + description. Read-only; for the RVU browse surface.
+    /// </summary>
+    Task<IReadOnlyList<RvuValue>> ListRvuValuesAsync(
+        Guid tenantId,
+        short? year,
+        char? quarter,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Patch a single CPT row's <c>work_rvu</c>, <c>description</c>, or <c>notes</c>.
     /// Pass <c>null</c> for any field that shouldn't change. Returns the row
     /// before and after the change so the caller can log a diff in audit.
@@ -265,7 +292,11 @@ public sealed record ReconciliationLineItem(
     decimal WorkRvuTotal,
     decimal? NovaradRvuWork,
     bool RvuMismatch,
-    IReadOnlyList<long> NovaradReportIds);
+    IReadOnlyList<long> NovaradReportIds,
+    // The STAT subset of NovaradReportIds (ris.order_procedures.stat_flag). Surfaced
+    // so the UI can derive per-radiologist STAT subtotals and badge STAT reports in
+    // the drill-down without a second query — mirrors the per-facility rollup.
+    IReadOnlyList<long> NovaradStatReportIds);
 
 /// <summary>
 /// Non-fatal anomaly surfaced during reconciliation (missing master row,

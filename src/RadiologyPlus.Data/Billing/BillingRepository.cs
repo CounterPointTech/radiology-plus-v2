@@ -136,6 +136,236 @@ public sealed class BillingRepository : IBillingRepository
             RanAt: DateTimeOffset.UtcNow);
     }
 
+    public async Task<RvuImport> ImportRvuValuesAsync(
+        Guid tenantId,
+        Guid runByUserId,
+        string fileName,
+        short year,
+        char quarter,
+        IReadOnlyList<RvuValueUpsert> rows,
+        IReadOnlyList<CptImportError> parseErrors,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        ArgumentNullException.ThrowIfNull(parseErrors);
+
+        var q = char.ToUpperInvariant(quarter);
+        if (q is not ('A' or 'B' or 'C' or 'D'))
+            throw new ArgumentOutOfRangeException(nameof(quarter), quarter, "quarter must be A, B, C, or D.");
+        var quarterStr = q.ToString();
+        var effectiveFrom = EffectiveFromForQuarter(year, q);
+
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+
+        // 1. Insert the import header so we have an import_id to tag rows with.
+        long importId;
+        await using (var insertHeader = conn.CreateCommand())
+        {
+            insertHeader.Transaction = tx;
+            insertHeader.CommandText = """
+                INSERT INTO billing.rvu_imports
+                    (tenant_id, file_name, year, quarter, parsed_rows, skipped_rows, errors, ran_by_user_id)
+                VALUES (@t, @file, @year, @q, @parsed, @skipped, @errors::jsonb, @user)
+                RETURNING import_id
+                """;
+            insertHeader.Parameters.AddWithValue("t", tenantId);
+            insertHeader.Parameters.AddWithValue("file", fileName);
+            insertHeader.Parameters.AddWithValue("year", year);
+            insertHeader.Parameters.AddWithValue("q", quarterStr);
+            insertHeader.Parameters.AddWithValue("parsed", rows.Count);
+            insertHeader.Parameters.AddWithValue("skipped", parseErrors.Count);
+            insertHeader.Parameters.AddWithValue("errors", JsonSerializer.Serialize(parseErrors));
+            insertHeader.Parameters.AddWithValue("user", runByUserId);
+            var result = await insertHeader.ExecuteScalarAsync(cancellationToken)
+                ?? throw new InvalidOperationException("INSERT rvu_imports did not return an id.");
+            importId = (long)result;
+        }
+
+        // 2. Bulk upsert via UNNEST — one round-trip regardless of row count (~19k).
+        //    The importer already de-duped (hcpcs, modifier), so ON CONFLICT never
+        //    touches the same row twice within this statement.
+        int inserted = 0, updated = 0;
+        if (rows.Count > 0)
+        {
+            int n = rows.Count;
+            var hcpcs = new string[n];
+            var mods = new string[n];
+            var descs = new string?[n];
+            var work = new decimal[n];
+            var peNf = new decimal?[n];
+            var peF = new decimal?[n];
+            var mp = new decimal?[n];
+            var totNf = new decimal?[n];
+            var totF = new decimal?[n];
+            var status = new string?[n];
+            var glob = new string?[n];
+            for (int i = 0; i < n; i++)
+            {
+                var r = rows[i];
+                hcpcs[i] = r.Hcpcs; mods[i] = r.Modifier; descs[i] = r.Description;
+                work[i] = r.WorkRvu; peNf[i] = r.PeRvuNonFac; peF[i] = r.PeRvuFac;
+                mp[i] = r.MpRvu; totNf[i] = r.TotalNonFac; totF[i] = r.TotalFac;
+                status[i] = r.StatusCode; glob[i] = r.GlobalDays;
+            }
+
+            await using var upsert = conn.CreateCommand();
+            upsert.Transaction = tx;
+            upsert.CommandText = """
+                WITH new_rows AS (
+                    SELECT * FROM UNNEST(
+                        @hcpcs, @mods, @descs, @work, @peNf, @peF, @mp, @totNf, @totF, @status, @glob
+                    ) AS t(hcpcs, modifier, description, work_rvu, pe_nf, pe_f, mp, tot_nf, tot_f, status_code, global_days)
+                ),
+                ins AS (
+                    INSERT INTO billing.rvu_values
+                        (tenant_id, year, quarter, hcpcs, modifier, description, work_rvu,
+                         pe_rvu_nonfac, pe_rvu_fac, mp_rvu, total_nonfac, total_fac,
+                         status_code, global_days, effective_from, source_import_id)
+                    SELECT @t, @year, @q, hcpcs, modifier, description, work_rvu::numeric(8,4),
+                           pe_nf::numeric(8,4), pe_f::numeric(8,4), mp::numeric(8,4),
+                           tot_nf::numeric(8,4), tot_f::numeric(8,4),
+                           status_code, global_days, @eff, @import
+                    FROM new_rows
+                    ON CONFLICT (tenant_id, year, quarter, hcpcs, modifier) DO UPDATE
+                        SET description      = EXCLUDED.description,
+                            work_rvu         = EXCLUDED.work_rvu,
+                            pe_rvu_nonfac    = EXCLUDED.pe_rvu_nonfac,
+                            pe_rvu_fac       = EXCLUDED.pe_rvu_fac,
+                            mp_rvu           = EXCLUDED.mp_rvu,
+                            total_nonfac     = EXCLUDED.total_nonfac,
+                            total_fac        = EXCLUDED.total_fac,
+                            status_code      = EXCLUDED.status_code,
+                            global_days      = EXCLUDED.global_days,
+                            effective_from   = EXCLUDED.effective_from,
+                            source_import_id = EXCLUDED.source_import_id,
+                            updated_at       = NOW()
+                    RETURNING (xmax = 0) AS inserted
+                )
+                SELECT COUNT(*) FILTER (WHERE inserted) AS inserted_count,
+                       COUNT(*) FILTER (WHERE NOT inserted) AS updated_count
+                FROM ins
+                """;
+            upsert.Parameters.AddWithValue("t", tenantId);
+            upsert.Parameters.AddWithValue("year", year);
+            upsert.Parameters.AddWithValue("q", quarterStr);
+            upsert.Parameters.Add(new NpgsqlParameter("eff", NpgsqlDbType.Date) { Value = effectiveFrom });
+            upsert.Parameters.AddWithValue("import", importId);
+            upsert.Parameters.Add(new NpgsqlParameter("hcpcs", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = hcpcs });
+            upsert.Parameters.Add(new NpgsqlParameter("mods", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = mods });
+            upsert.Parameters.Add(new NpgsqlParameter("descs", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = descs });
+            upsert.Parameters.Add(new NpgsqlParameter("work", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = work });
+            upsert.Parameters.Add(new NpgsqlParameter("peNf", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = peNf });
+            upsert.Parameters.Add(new NpgsqlParameter("peF", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = peF });
+            upsert.Parameters.Add(new NpgsqlParameter("mp", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = mp });
+            upsert.Parameters.Add(new NpgsqlParameter("totNf", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = totNf });
+            upsert.Parameters.Add(new NpgsqlParameter("totF", NpgsqlDbType.Array | NpgsqlDbType.Numeric) { Value = totF });
+            upsert.Parameters.Add(new NpgsqlParameter("status", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = status });
+            upsert.Parameters.Add(new NpgsqlParameter("glob", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = glob });
+            await using var reader = await upsert.ExecuteReaderAsync(cancellationToken);
+            if (await reader.ReadAsync(cancellationToken))
+            {
+                inserted = checked((int)reader.GetInt64(0));
+                updated = checked((int)reader.GetInt64(1));
+            }
+        }
+
+        // 3. Update header counts.
+        await using (var updateHeader = conn.CreateCommand())
+        {
+            updateHeader.Transaction = tx;
+            updateHeader.CommandText = """
+                UPDATE billing.rvu_imports SET inserted_rows = @ins, updated_rows = @upd
+                WHERE import_id = @id
+                """;
+            updateHeader.Parameters.AddWithValue("id", importId);
+            updateHeader.Parameters.AddWithValue("ins", inserted);
+            updateHeader.Parameters.AddWithValue("upd", updated);
+            await updateHeader.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await tx.CommitAsync(cancellationToken);
+
+        return new RvuImport(
+            ImportId: importId,
+            FileName: fileName,
+            Year: year,
+            Quarter: q,
+            ParsedRows: rows.Count,
+            InsertedRows: inserted,
+            UpdatedRows: updated,
+            SkippedRows: parseErrors.Count,
+            Errors: parseErrors,
+            RanByUserId: runByUserId,
+            RanAt: DateTimeOffset.UtcNow);
+    }
+
+    // A=Jan, B=Apr, C=Jul, D=Oct — the quarter a CMS RVU release takes effect.
+    private static DateOnly EffectiveFromForQuarter(short year, char quarter) =>
+        char.ToUpperInvariant(quarter) switch
+        {
+            'B' => new DateOnly(year, 4, 1),
+            'C' => new DateOnly(year, 7, 1),
+            'D' => new DateOnly(year, 10, 1),
+            _ => new DateOnly(year, 1, 1),
+        };
+
+    public async Task<IReadOnlyList<RvuValue>> ListRvuValuesAsync(
+        Guid tenantId,
+        short? year,
+        char? quarter,
+        string? search,
+        int limit,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        var hasSearch = !string.IsNullOrWhiteSpace(search);
+        cmd.CommandText = $"""
+            SELECT year, quarter, hcpcs, modifier, description, work_rvu,
+                   pe_rvu_nonfac, pe_rvu_fac, mp_rvu, total_nonfac, total_fac,
+                   status_code, global_days, effective_from, source_import_id,
+                   created_at, updated_at
+            FROM billing.rvu_values
+            WHERE tenant_id = @t
+              {(year is null ? "" : "AND year = @year")}
+              {(quarter is null ? "" : "AND quarter = @q")}
+              {(hasSearch ? "AND (description ILIKE @search OR hcpcs ILIKE @search)" : "")}
+            ORDER BY hcpcs, modifier
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        if (year is not null) cmd.Parameters.AddWithValue("year", year.Value);
+        if (quarter is not null) cmd.Parameters.AddWithValue("q", char.ToUpperInvariant(quarter.Value).ToString());
+        if (hasSearch) cmd.Parameters.AddWithValue("search", $"%{search!.Trim()}%");
+        cmd.Parameters.AddWithValue("limit", limit);
+
+        var result = new List<RvuValue>();
+        await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await rdr.ReadAsync(cancellationToken))
+        {
+            result.Add(new RvuValue(
+                Year:           rdr.GetInt16(0),
+                Quarter:        rdr.GetString(1)[0],
+                Hcpcs:          rdr.GetString(2),
+                Modifier:       rdr.GetString(3),
+                Description:    rdr.IsDBNull(4) ? null : rdr.GetString(4),
+                WorkRvu:        rdr.GetDecimal(5),
+                PeRvuNonFac:    rdr.IsDBNull(6) ? null : rdr.GetDecimal(6),
+                PeRvuFac:       rdr.IsDBNull(7) ? null : rdr.GetDecimal(7),
+                MpRvu:          rdr.IsDBNull(8) ? null : rdr.GetDecimal(8),
+                TotalNonFac:    rdr.IsDBNull(9) ? null : rdr.GetDecimal(9),
+                TotalFac:       rdr.IsDBNull(10) ? null : rdr.GetDecimal(10),
+                StatusCode:     rdr.IsDBNull(11) ? null : rdr.GetString(11),
+                GlobalDays:     rdr.IsDBNull(12) ? null : rdr.GetString(12),
+                EffectiveFrom:  rdr.IsDBNull(13) ? null : rdr.GetFieldValue<DateOnly>(13),
+                SourceImportId: rdr.IsDBNull(14) ? null : rdr.GetInt64(14),
+                CreatedAt:      new DateTimeOffset(rdr.GetDateTime(15), TimeSpan.Zero),
+                UpdatedAt:      new DateTimeOffset(rdr.GetDateTime(16), TimeSpan.Zero)));
+        }
+        return result;
+    }
+
     public async Task<IReadOnlyList<CptCode>> ListCptCodesAsync(
         Guid tenantId, short year, string? search, int limit, CancellationToken cancellationToken = default)
     {
@@ -480,7 +710,8 @@ public sealed class BillingRepository : IBillingRepository
                     WorkRvuTotal: agg.WorkRvuTotal,
                     NovaradRvuWork: agg.NovaradRvuWork,
                     RvuMismatch: agg.RvuMismatch,
-                    NovaradReportIds: agg.ReportIds));
+                    NovaradReportIds: agg.ReportIds,
+                    NovaradStatReportIds: agg.StatReportIds));
             }
         }
 
@@ -1245,7 +1476,8 @@ public sealed class BillingRepository : IBillingRepository
                     WorkRvuTotal: rdr.GetDecimal(10),
                     NovaradRvuWork: rdr.IsDBNull(11) ? null : rdr.GetDecimal(11),
                     RvuMismatch: rdr.GetBoolean(12),
-                    NovaradReportIds: reportIds));
+                    NovaradReportIds: reportIds,
+                    NovaradStatReportIds: statIds));
             }
         }
 
@@ -1264,43 +1496,122 @@ public sealed class BillingRepository : IBillingRepository
 
         if (years.Length == 0) return new MasterIndex(singletons, bundles);
 
-        await using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = """
-            SELECT year, cpt_code, description, work_rvu, notes, is_active,
-                   imported_from_import_id, created_at, updated_at
-            FROM billing.cpt_codes
-            WHERE tenant_id = @t
-              AND year = ANY(@years)
-              AND is_active = TRUE
-            """;
-        cmd.Parameters.AddWithValue("t", tenantId);
-        cmd.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
-        await using var rdr = await cmd.ExecuteReaderAsync(ct);
-        while (await rdr.ReadAsync(ct))
+        // Base layer: cpt_codes (Amber's curated set + the bundles CMS won't carry).
+        // Scoped in its own block so the reader closes before the overlay queries run on
+        // this same connection — Npgsql permits only one active reader per connection.
+        await using (var cmd = conn.CreateCommand())
         {
-            var row = new CptCode(
-                Year: rdr.GetInt16(0),
-                Code: rdr.GetString(1),
-                Description: rdr.GetString(2),
-                WorkRvu: rdr.GetDecimal(3),
-                Notes: rdr.IsDBNull(4) ? null : rdr.GetString(4),
-                IsActive: rdr.GetBoolean(5),
-                ImportedFromImportId: rdr.IsDBNull(6) ? null : rdr.GetInt64(6),
-                CreatedAt: new DateTimeOffset(rdr.GetDateTime(7), TimeSpan.Zero),
-                UpdatedAt: new DateTimeOffset(rdr.GetDateTime(8), TimeSpan.Zero));
+            cmd.Transaction = tx;
+            cmd.CommandText = """
+                SELECT year, cpt_code, description, work_rvu, notes, is_active,
+                       imported_from_import_id, created_at, updated_at
+                FROM billing.cpt_codes
+                WHERE tenant_id = @t
+                  AND year = ANY(@years)
+                  AND is_active = TRUE
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
+            await using var rdr = await cmd.ExecuteReaderAsync(ct);
+            while (await rdr.ReadAsync(ct))
+            {
+                var row = new CptCode(
+                    Year: rdr.GetInt16(0),
+                    Code: rdr.GetString(1),
+                    Description: rdr.GetString(2),
+                    WorkRvu: rdr.GetDecimal(3),
+                    Notes: rdr.IsDBNull(4) ? null : rdr.GetString(4),
+                    IsActive: rdr.GetBoolean(5),
+                    ImportedFromImportId: rdr.IsDBNull(6) ? null : rdr.GetInt64(6),
+                    CreatedAt: new DateTimeOffset(rdr.GetDateTime(7), TimeSpan.Zero),
+                    UpdatedAt: new DateTimeOffset(rdr.GetDateTime(8), TimeSpan.Zero));
 
-            if (row.Code.Contains(';'))
-            {
-                var parts = row.Code.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-                var key = NormalizeCptSetKey(parts);
-                bundles[(row.Year, key)] = row;
-            }
-            else
-            {
-                singletons[(row.Year, NormalizeCpt(row.Code))] = row;
+                if (row.Code.Contains(';'))
+                {
+                    var parts = row.Code.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+                    var key = NormalizeCptSetKey(parts);
+                    bundles[(row.Year, key)] = row;
+                }
+                else
+                {
+                    singletons[(row.Year, NormalizeCpt(row.Code))] = row;
+                }
             }
         }
+
+        // ── RVU resolution precedence (item 1.2): rvu_overrides → rvu_values → cpt_codes.
+        //    cpt_codes (above) is the base + the sole source of bundles. Now overlay the
+        //    CMS per-HCPCS truth, then tenant-wide manual overrides on top.
+
+        // Overlay CMS rvu_values: for a singleton already present, keep Amber's curated
+        // description but take the CMS work RVU; codes CMS carries that Amber's sheet lacks
+        // are ADDED so real CPTs on signed reports get credited from CMS truth. Gated to
+        // status 'A' (active / separately payable) global (modifier='') rows with work_rvu>0,
+        // so non-payable statuses (B bundled, N non-covered, I/X excluded, etc.) and 0-work
+        // codes (category II/III) are NOT auto-credited and still surface on the unmapped
+        // report — Amber can still curate those in cpt_codes or pin them via rvu_overrides.
+        // DISTINCT ON picks the latest quarter when several are loaded for a year.
+        await using (var cms = conn.CreateCommand())
+        {
+            cms.Transaction = tx;
+            cms.CommandText = """
+                SELECT DISTINCT ON (year, hcpcs) year, hcpcs, work_rvu, description
+                FROM billing.rvu_values
+                WHERE tenant_id = @t
+                  AND year = ANY(@years)
+                  AND modifier = ''
+                  AND status_code = 'A'
+                  AND work_rvu > 0
+                ORDER BY year, hcpcs, quarter DESC
+                """;
+            cms.Parameters.AddWithValue("t", tenantId);
+            cms.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
+            await using var crdr = await cms.ExecuteReaderAsync(ct);
+            while (await crdr.ReadAsync(ct))
+            {
+                var y = crdr.GetInt16(0);
+                var code = NormalizeCpt(crdr.GetString(1));
+                var work = crdr.GetDecimal(2);
+                var desc = crdr.IsDBNull(3) ? null : crdr.GetString(3);
+                var key = (y, code);
+                singletons[key] = singletons.TryGetValue(key, out var existing)
+                    ? existing with { WorkRvu = work }                  // CMS RVU, keep curated description
+                    : new CptCode(y, code, desc ?? code, work, Notes: "CMS PPRRVU",
+                        IsActive: true, ImportedFromImportId: null,
+                        CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+            }
+        }
+
+        // Top layer: tenant-wide manual RVU overrides win over CMS + cpt_codes. (Facility-
+        // specific overrides aren't resolved here yet — reconciliation aggregates per site,
+        // so per-facility override resolution is a later refinement.)
+        await using (var ov = conn.CreateCommand())
+        {
+            ov.Transaction = tx;
+            ov.CommandText = """
+                SELECT year, cpt_code, override_work_rvu
+                FROM billing.rvu_overrides
+                WHERE tenant_id = @t
+                  AND year = ANY(@years)
+                  AND facility_id IS NULL
+                """;
+            ov.Parameters.AddWithValue("t", tenantId);
+            ov.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
+            await using var ordr = await ov.ExecuteReaderAsync(ct);
+            while (await ordr.ReadAsync(ct))
+            {
+                var y = ordr.GetInt16(0);
+                var code = NormalizeCpt(ordr.GetString(1));
+                var work = ordr.GetDecimal(2);
+                var key = (y, code);
+                singletons[key] = singletons.TryGetValue(key, out var existing)
+                    ? existing with { WorkRvu = work }
+                    : new CptCode(y, code, code, work, Notes: "override",
+                        IsActive: true, ImportedFromImportId: null,
+                        CreatedAt: DateTimeOffset.UtcNow, UpdatedAt: DateTimeOffset.UtcNow);
+            }
+        }
+
         return new MasterIndex(singletons, bundles);
     }
 

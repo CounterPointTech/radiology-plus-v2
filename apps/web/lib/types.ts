@@ -92,6 +92,9 @@ export interface ReconciliationLineItem {
   novaradRvuWork: number | null;
   rvuMismatch: boolean;
   novaradReportIds: number[];
+  // STAT subset of novaradReportIds — drives the per-radiologist STAT subtotal and
+  // the STAT badge in the drill-down. Older runs return [] (additive run-time snapshot).
+  novaradStatReportIds: number[];
 }
 
 export interface ReconciliationNote {

@@ -114,7 +114,13 @@ public sealed class NovaradReportsReader : INovaradReportsReader
                 r.signed_date,
                 bsc.service_code AS cpt_code,
                 COALESCE(sl.units, 1)::numeric(10,2) AS units,
-                bsc.description AS cpt_description,
+                -- bsc.description is NULL for ~93% of this customer's service codes
+                -- (incl. every unmapped one), so fall back to the procedure's exam
+                -- name (op.procedure_name is fully populated) to give a human a
+                -- meaningful label for mapping. Only the unmapped report consumes
+                -- this — credited reconciliation lines show the CPT-master description.
+                COALESCE(NULLIF(TRIM(bsc.description::text), ''),
+                         NULLIF(TRIM(op.procedure_name::text), '')) AS cpt_description,
                 bsc.rvu_work AS novarad_rvu_work,
                 op.stat_flag AS stat_flag
             FROM ris.reports r

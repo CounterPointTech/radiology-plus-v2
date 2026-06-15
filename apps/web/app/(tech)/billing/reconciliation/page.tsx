@@ -314,10 +314,13 @@ function ResultView({ run }: { run: ReconciliationRun }) {
   return (
     <>
       <RunSummary run={run} />
-      {run.facilitySummaries && run.facilitySummaries.length > 0 ? (
-        <FacilitySummaryPanel summaries={run.facilitySummaries} />
-      ) : null}
       {run.notes.length > 0 ? <NotesPanel notes={run.notes} /> : null}
+      {run.lineItems.length > 0 ? (
+        <ReportSummaryPanel
+          facilitySummaries={run.facilitySummaries ?? []}
+          physicians={byPhysician}
+        />
+      ) : null}
 
       {run.lineItems.length === 0 ? (
         <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-6 py-10 text-center">
@@ -527,51 +530,106 @@ function Stat({
   );
 }
 
-// Per-facility STAT subtotal. Accent (cyan), never red — STAT is attention-
-// drawing, not an error state. Subtotals reconcile to the run totals.
-function FacilitySummaryPanel({
-  summaries,
+// Report summary — distinct credited reports for the run, broken down either by
+// facility (Novarad site) or by radiologist, with the STAT subset alongside. STAT
+// renders in the accent (cyan), never red — it's attention-drawing, not an error.
+// Either breakdown reconciles to the run totals: every report has exactly one site
+// and one signing radiologist, so the partitions both sum to the same totals.
+function ReportSummaryPanel({
+  facilitySummaries,
+  physicians,
 }: {
-  summaries: ReconciliationFacilitySummary[];
+  facilitySummaries: ReconciliationFacilitySummary[];
+  physicians: PhysicianGroup[];
 }) {
-  const totalReports = summaries.reduce((a, s) => a + s.totalReports, 0);
-  const totalStat = summaries.reduce((a, s) => a + s.statReportCount, 0);
+  const hasFacilities = facilitySummaries.length > 0;
+  const [mode, setMode] = useState<"facility" | "radiologist">(
+    hasFacilities ? "facility" : "radiologist",
+  );
+
+  const rows =
+    mode === "facility"
+      ? facilitySummaries.map((s) => ({
+          key: s.siteCode,
+          label: s.siteCode,
+          mono: true,
+          totalReports: s.totalReports,
+          stat: s.statReportCount,
+        }))
+      : physicians.map((g) => ({
+          key: String(g.novaradPhysicianId),
+          label: g.physicianDisplayName,
+          mono: false,
+          totalReports: g.totalReports,
+          stat: g.statReportCount,
+        }));
+
+  const sorted = [...rows].sort((a, b) => b.totalReports - a.totalReports);
+  const totalReports = rows.reduce((a, r) => a + r.totalReports, 0);
+  const totalStat = rows.reduce((a, r) => a + r.stat, 0);
+  const colLabel = mode === "facility" ? "Facility" : "Radiologist";
+  const footLabel = mode === "facility" ? "All facilities" : "All radiologists";
+
   return (
     <section className="mb-4 rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-surface)] overflow-hidden">
-      <header className="px-4 py-3 bg-[color:var(--color-surface-2)] border-b border-[color:var(--color-border)] flex items-baseline justify-between gap-x-4">
-        <h2 className="text-sm font-medium">By facility</h2>
-        <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
-          STAT subtotal
-        </span>
+      <header className="px-4 py-3 bg-[color:var(--color-surface-2)] border-b border-[color:var(--color-border)] flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div>
+          <h2 className="text-sm font-medium">Report summary</h2>
+          <p className="text-[11px] text-[color:var(--color-muted-fg)]">
+            Distinct signed reports credited this run, with the STAT subset.
+          </p>
+        </div>
+        <div className="flex items-center gap-1">
+          {(["facility", "radiologist"] as const).map((m) => (
+            <button
+              key={m}
+              type="button"
+              onClick={() => setMode(m)}
+              className={`px-2.5 py-1 rounded-md text-xs border ${
+                mode === m
+                  ? "border-[color:var(--color-accent)] bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+                  : "border-[color:var(--color-border)] text-[color:var(--color-muted-fg)] hover:bg-[color:var(--color-surface-2)]"
+              }`}
+            >
+              {m === "facility" ? "By facility" : "By radiologist"}
+            </button>
+          ))}
+        </div>
       </header>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="text-left text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)] bg-[color:var(--color-surface-2)]/50">
             <tr>
-              <th className="px-4 py-2.5 font-medium">Facility</th>
+              <th className="px-4 py-2.5 font-medium">{colLabel}</th>
               <th className="px-4 py-2.5 font-medium text-right w-28">Reports</th>
               <th className="px-4 py-2.5 font-medium text-right w-28">STAT</th>
             </tr>
           </thead>
           <tbody>
-            {summaries.map((s) => (
+            {sorted.map((r) => (
               <tr
-                key={s.siteCode}
+                key={r.key}
                 className="border-t border-[color:var(--color-border)]"
               >
-                <td className="px-4 py-2 font-mono text-xs">{s.siteCode}</td>
+                <td
+                  className={
+                    r.mono ? "px-4 py-2 font-mono text-xs" : "px-4 py-2 text-sm"
+                  }
+                >
+                  {r.label}
+                </td>
                 <td className="px-4 py-2 font-mono text-right tabular-nums">
-                  {s.totalReports}
+                  {r.totalReports}
                 </td>
                 <td className="px-4 py-2 font-mono text-right tabular-nums font-medium text-[color:var(--color-accent)]">
-                  {s.statReportCount}
+                  {r.stat}
                 </td>
               </tr>
             ))}
           </tbody>
           <tfoot>
             <tr className="border-t border-[color:var(--color-border)] bg-[color:var(--color-surface-2)]/40">
-              <td className="px-4 py-2 text-xs font-medium">All facilities</td>
+              <td className="px-4 py-2 text-xs font-medium">{footLabel}</td>
               <td className="px-4 py-2 font-mono text-right tabular-nums font-medium">
                 {totalReports}
               </td>
@@ -586,25 +644,44 @@ function FacilitySummaryPanel({
   );
 }
 
+// Data-quality findings for the run (uncredited codes, RVU drift, etc.). Per Dan's
+// boss these are the sanctioned exception to the cyan-not-red rule: they flag that
+// something is wrong, so they take the alert red to grab attention — while staying
+// collapsed at the top so they don't crowd the page until the reviewer opens them.
 function NotesPanel({ notes }: { notes: ReconciliationRun["notes"] }) {
+  const [open, setOpen] = useState(false);
+  const Chevron = open ? ChevronDown : ChevronRight;
   return (
-    <section className="mb-4 rounded-lg border border-[color:var(--color-caution)]/40 bg-[color:var(--color-caution)]/10 p-4">
-      <div className="flex items-center gap-2 mb-2 text-[color:var(--color-caution)]">
-        <AlertTriangle className="size-4" />
-        <span className="text-sm font-medium">
-          {notes.length} note{notes.length === 1 ? "" : "s"}
+    <section className="mb-4 rounded-lg border border-[color:var(--color-novarad-red)]/40 bg-[color:var(--color-novarad-red)]/5 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        className="w-full flex items-center justify-between gap-2 px-4 py-3 text-left hover:bg-[color:var(--color-novarad-red)]/10"
+      >
+        <span className="flex items-center gap-2 text-[color:var(--color-novarad-red)]">
+          <Chevron className="size-4" />
+          <AlertTriangle className="size-4" />
+          <span className="text-sm font-medium">
+            {notes.length} reconciliation note{notes.length === 1 ? "" : "s"}
+          </span>
         </span>
-      </div>
-      <ul className="text-xs space-y-1">
-        {notes.map((n, i) => (
-          <li key={i} className="flex gap-2">
-            <span className="font-mono text-[10px] uppercase tracking-wider text-[color:var(--color-muted-fg)] mt-0.5 shrink-0">
-              {n.kind}
-            </span>
-            <span>{n.message}</span>
-          </li>
-        ))}
-      </ul>
+        <span className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+          {open ? "Hide" : "Review"}
+        </span>
+      </button>
+      {open ? (
+        <ul className="text-xs space-y-1 px-4 pb-3 pt-1 border-t border-[color:var(--color-novarad-red)]/20">
+          {notes.map((n, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="font-mono text-[10px] uppercase tracking-wider text-[color:var(--color-muted-fg)] mt-0.5 shrink-0">
+                {n.kind}
+              </span>
+              <span>{n.message}</span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }
@@ -615,6 +692,7 @@ interface PhysicianGroup {
   physicianDisplayName: string;
   lines: ReconciliationLineItem[];
   totalReports: number;
+  statReportCount: number;
   totalWorkRvu: number;
 }
 
@@ -632,17 +710,22 @@ function groupByPhysician(lines: ReconciliationLineItem[]): PhysicianGroup[] {
         physicianDisplayName: line.physicianDisplayName,
         lines: [line],
         totalReports: 0,
+        statReportCount: 0,
         totalWorkRvu: line.workRvuTotal,
       });
     }
   }
-  // Compute distinct-report count per physician across their lines.
+  // Compute distinct-report and distinct-STAT-report counts per physician across
+  // their lines (a report can appear on several CPT lines, so dedupe by id).
   for (const g of map.values()) {
     const reportIds = new Set<number>();
+    const statIds = new Set<number>();
     for (const line of g.lines) {
       for (const rid of line.novaradReportIds) reportIds.add(rid);
+      for (const sid of line.novaradStatReportIds) statIds.add(sid);
     }
     g.totalReports = reportIds.size;
+    g.statReportCount = statIds.size;
     g.lines.sort((a, b) => a.cptCode.localeCompare(b.cptCode));
   }
   return [...map.values()].sort((a, b) =>
@@ -669,6 +752,16 @@ function PhysicianBlock({
           <span>
             <span className="font-mono tabular-nums">{group.totalReports}</span>{" "}
             report{group.totalReports === 1 ? "" : "s"}
+          </span>
+          <span className="text-[color:var(--color-accent)]">
+            <span className="font-mono tabular-nums">{group.statReportCount}</span>{" "}
+            STAT
+          </span>
+          <span>
+            <span className="font-mono tabular-nums">
+              {group.totalReports - group.statReportCount}
+            </span>{" "}
+            normal
           </span>
           <span>
             <span className="font-mono tabular-nums">
@@ -812,7 +905,7 @@ function LineRow({
       {isExpanded ? (
         <tr className="border-t border-[color:var(--color-border)] bg-[color:var(--color-surface-2)]/30">
           <td colSpan={9} className="px-4 py-3">
-            <LineDetail detail={detail} />
+            <LineDetail detail={detail} statReportIds={line.novaradStatReportIds} />
           </td>
         </tr>
       ) : null}
@@ -826,7 +919,16 @@ type ReportFetch =
   | { state: "loaded"; content: ReportContent }
   | { state: "error"; message: string };
 
-function LineDetail({ detail }: { detail: DetailState | undefined }) {
+function LineDetail({
+  detail,
+  statReportIds,
+}: {
+  detail: DetailState | undefined;
+  statReportIds: number[];
+}) {
+  // Reports ordered STAT in Novarad — badge them inline so the reviewer sees the
+  // STAT subset that rolls up into the summary's STAT subtotal.
+  const statSet = useMemo(() => new Set(statReportIds), [statReportIds]);
   const [expanded, setExpanded] = useState<Set<number>>(() => new Set());
   const [contents, setContents] = useState<Map<number, ReportFetch>>(
     () => new Map(),
@@ -921,7 +1023,16 @@ function LineDetail({ detail }: { detail: DetailState | undefined }) {
                       <Chevron className="size-3.5 text-[color:var(--color-muted-fg)]" />
                     </button>
                   </td>
-                  <td className="px-2 py-1.5 font-mono tabular-nums">{r.reportId}</td>
+                  <td className="px-2 py-1.5 font-mono tabular-nums">
+                    <span className="inline-flex items-center gap-1.5">
+                      {r.reportId}
+                      {statSet.has(r.reportId) ? (
+                        <Badge variant="accent" title="Ordered STAT in Novarad">
+                          STAT
+                        </Badge>
+                      ) : null}
+                    </span>
+                  </td>
                   <td className="px-2 py-1.5 whitespace-nowrap">
                     {formatDateTime(r.signedAt)}
                   </td>

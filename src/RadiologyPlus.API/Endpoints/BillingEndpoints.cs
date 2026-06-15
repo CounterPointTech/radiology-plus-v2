@@ -15,6 +15,10 @@ public static class BillingEndpoints
     // to keep an attacker from streaming 4 GB through the parser.
     private const long MaxUploadBytes = 5 * 1024 * 1024;
 
+    // CMS RVU zips are larger — RVU26A is ~5.7 MB; the bare PPRRVU csv ~2.6 MB.
+    // Cap at 25 MB (still under Kestrel's default request-body limit).
+    private const long MaxRvuUploadBytes = 25 * 1024 * 1024;
+
     public static IEndpointRouteBuilder MapBillingEndpoints(this IEndpointRouteBuilder app)
     {
         var group = app.MapGroup("/billing")
@@ -28,6 +32,12 @@ public static class BillingEndpoints
         group.MapGet("/cpt-master", ListCptMasterAsync).WithName("BillingListCptMaster");
         group.MapGet("/cpt-master/imports", ListCptImportsAsync).WithName("BillingListImports");
         group.MapPatch("/cpt-master/{code}", PatchCptCodeAsync).WithName("BillingPatchCptCode");
+
+        // Item 1.2 — CMS RVU source-of-truth (billing.rvu_values)
+        group.MapPost("/rvu/import", ImportRvuValuesAsync)
+             .WithName("BillingImportRvu")
+             .DisableAntiforgery();                      // bearer-token auth + same-origin CORS is our guard
+        group.MapGet("/rvu", ListRvuValuesAsync).WithName("BillingListRvu");
         group.MapGet("/reconciliation/preview", PreviewReconciliationAsync).WithName("BillingReconciliationPreview");
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
@@ -354,6 +364,73 @@ public static class BillingEndpoints
             user.TenantId,
             Math.Clamp(limit ?? 25, 1, 200),
             ct);
+        return Results.Ok(rows);
+    }
+
+    // ========================================================================
+    // Item 1.2 — CMS RVU source-of-truth (billing.rvu_values)
+    // ========================================================================
+
+    [Authorize]
+    private static async Task<IResult> ImportRvuValuesAsync(
+        HttpRequest request,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuValuesImporter importer,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        if (!request.HasFormContentType)
+            return Results.BadRequest(new { error = "multipart/form-data required" });
+
+        var form = await request.ReadFormAsync(ct);
+        var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
+        if (file is null || file.Length == 0)
+            return Results.BadRequest(new { error = "No file uploaded under field 'file'." });
+        if (file.Length > MaxRvuUploadBytes)
+            return Results.BadRequest(new { error = $"File exceeds the {MaxRvuUploadBytes / 1024 / 1024} MB upload cap." });
+
+        var resolvedYear = year ?? (short)DateTime.Now.Year;
+        var q = string.IsNullOrWhiteSpace(quarter) ? 'A' : char.ToUpperInvariant(quarter.Trim()[0]);
+        if (q is not ('A' or 'B' or 'C' or 'D'))
+            return Results.BadRequest(new { error = "quarter must be one of A, B, C, D (A=Jan, B=Apr, C=Jul, D=Oct)." });
+
+        await using var stream = file.OpenReadStream();
+        var parsed = importer.Parse(stream, file.FileName, resolvedYear, q);
+
+        // Always persist an import header — even a 0-row/garbage upload leaves an audited
+        // billing.rvu_imports row carrying the parse errors, matching the CPT-master contract.
+        var header = await repo.ImportRvuValuesAsync(
+            user.TenantId, user.UserId, file.FileName,
+            parsed.Year, parsed.Quarter, parsed.Rows, parsed.Errors, ct);
+
+        return Results.Ok(header);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListRvuValuesAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        [FromQuery] string? q,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        char? quarterChar = string.IsNullOrWhiteSpace(quarter)
+            ? null
+            : char.ToUpperInvariant(quarter.Trim()[0]);
+
+        var rows = await repo.ListRvuValuesAsync(
+            user.TenantId, year, quarterChar, q,
+            Math.Clamp(limit ?? 100, 1, 1000), ct);
         return Results.Ok(rows);
     }
 
