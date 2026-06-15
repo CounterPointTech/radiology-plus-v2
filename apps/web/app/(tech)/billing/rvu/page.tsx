@@ -21,6 +21,13 @@ import {
 import { cn, formatDateTime } from "@/lib/utils";
 
 const QUARTERS: RvuQuarter[] = ["A", "B", "C", "D"];
+const QUARTER_ORDINAL: Record<RvuQuarter, string> = { A: "1st", B: "2nd", C: "3rd", D: "4th" };
+const QUARTER_MONTHS: Record<RvuQuarter, string> = {
+  A: "January to March",
+  B: "April to June",
+  C: "July to September",
+  D: "October to December",
+};
 const CMS_PAGE = 200;
 const MASTER_LIMIT = 2000;
 
@@ -192,6 +199,7 @@ function CmsValuesTab({ year, imports }: { year: number; imports: RvuImport[] })
               key={q}
               type="button"
               onClick={() => setQuarter(q)}
+              title={`${QUARTER_MONTHS[q]} · CMS file rvu${String(year).slice(2)}${q.toLowerCase()}.zip`}
               className={cn(
                 "px-3 py-1.5 text-sm border-r border-[color:var(--color-border)] last:border-r-0",
                 quarter === q
@@ -200,13 +208,10 @@ function CmsValuesTab({ year, imports }: { year: number; imports: RvuImport[] })
               )}
               aria-pressed={quarter === q}
             >
-              {q}
+              {QUARTER_ORDINAL[q]}
             </button>
           ))}
         </div>
-        <span className="text-xs text-[color:var(--color-muted-fg)]">
-          A=Jan · B=Apr · C=Jul · D=Oct
-        </span>
         <a
           href="https://www.cms.gov/medicare/payment/fee-schedules/physician/pfs-relative-value-files"
           target="_blank"
@@ -234,7 +239,7 @@ function CmsValuesTab({ year, imports }: { year: number; imports: RvuImport[] })
           <span className="font-mono">{lastImport.fileName}</span>
           <span className="text-[color:var(--color-muted-fg)]">·</span>
           <span>
-            {lastImport.year} Q{lastImport.quarter}
+            {lastImport.year} · {QUARTER_ORDINAL[lastImport.quarter]} quarter
           </span>
           <span className="text-[color:var(--color-muted-fg)]">·</span>
           <span>

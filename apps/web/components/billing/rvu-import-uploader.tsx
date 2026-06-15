@@ -11,11 +11,12 @@ import { billingApi } from "@/lib/api";
 import { type RvuImport, type RvuQuarter } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+const QUARTER_ORDINAL: Record<RvuQuarter, string> = { A: "1st", B: "2nd", C: "3rd", D: "4th" };
 const QUARTER_LABEL: Record<RvuQuarter, string> = {
-  A: "A · effective January",
-  B: "B · effective April",
-  C: "C · effective July",
-  D: "D · effective October",
+  A: "1st quarter (January to March)",
+  B: "2nd quarter (April to June)",
+  C: "3rd quarter (July to September)",
+  D: "4th quarter (October to December)",
 };
 
 interface RvuImportUploaderProps {
@@ -89,13 +90,13 @@ export function RvuImportUploader({
             className="text-base font-medium"
             style={{ fontFamily: "var(--font-display)" }}
           >
-            Import {year} Q{quarter} RVU values
+            Import {year} {QUARTER_ORDINAL[quarter]}-quarter RVU values
           </h2>
           <p className="text-xs text-[color:var(--color-muted-fg)] mt-0.5">
             Drop the CMS PPRRVU release (
             <code className="font-mono">RVU{String(year).slice(2)}
             {quarter}.zip</code>) or the bare <code className="font-mono">.csv</code>.
-            Loads into the <strong>{year}</strong> /{" "}
+            Loads into the <strong>{year}</strong>{" "}
             <strong>{QUARTER_LABEL[quarter]}</strong> snapshot.
           </p>
         </div>
