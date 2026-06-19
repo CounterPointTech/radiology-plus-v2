@@ -5,10 +5,17 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { StatusBanner } from "@/components/status-banner";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
-import { canAccessBilling, canManageTemplates, isNrs, roleLabel } from "@/lib/types";
+import {
+  canAccessAdmin,
+  canAccessBilling,
+  canManageTemplates,
+  isNrs,
+  roleLabel,
+} from "@/lib/types";
 
 export default function TechLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -30,6 +37,7 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <div className="min-h-screen flex flex-col">
+      <StatusBanner />
       <header className="border-b border-[color:var(--color-border)] bg-[color:var(--color-surface)]/80 backdrop-blur supports-[backdrop-filter]:bg-[color:var(--color-surface)]/60 sticky top-0 z-30">
         <div className="mx-auto max-w-7xl px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-4">
@@ -87,6 +95,14 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
                   className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
                 >
                   Reason templates
+                </Link>
+              ) : null}
+              {canAccessAdmin(user.role) ? (
+                <Link
+                  href="/admin/status-banner"
+                  className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
+                >
+                  Status banner
                 </Link>
               ) : null}
             </nav>

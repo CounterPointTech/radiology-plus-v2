@@ -7,12 +7,14 @@ using RadiologyPlus.API.Endpoints;
 using RadiologyPlus.Common.Encryption;
 using RadiologyPlus.Common.Security;
 using RadiologyPlus.API.Hubs;
+using RadiologyPlus.Core.Announcements;
 using RadiologyPlus.Core.Audit;
 using RadiologyPlus.Core.Billing;
 using RadiologyPlus.Core.Data;
 using RadiologyPlus.Core.Identity;
 using RadiologyPlus.Core.TechValidation;
 using RadiologyPlus.Core.Tenancy;
+using RadiologyPlus.Data.Announcements;
 using RadiologyPlus.Data.Audit;
 using RadiologyPlus.Data.Billing;
 using RadiologyPlus.Data.Connections;
@@ -71,6 +73,9 @@ builder.Services.AddSingleton<IRvuValuesImporter, RvuValuesImporter>();         
 builder.Services.AddScoped<IRvuWriteBackSink, NoOpRvuWriteBackSink>();            // item 1.2 — M*Modal write-back stub (TODO(MModal-rvu-writeback))
 builder.Services.AddScoped<INovaradReportsReader, NovaradReportsReader>();
 builder.Services.AddSingleton<IReconciliationExporter, ReconciliationExporter>();
+
+// Announcements (admin status banner)
+builder.Services.AddScoped<IAnnouncementsRepository, AnnouncementsRepository>();
 
 // JWT
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
@@ -139,6 +144,7 @@ app.MapAuthEndpoints();
 app.MapDiagnosticsEndpoints();
 app.MapTechValidationEndpoints();
 app.MapBillingEndpoints();
+app.MapAnnouncementsEndpoints();
 app.MapHub<MonitoringHub>("/hubs/monitoring");
 
 await app.RunAsync();

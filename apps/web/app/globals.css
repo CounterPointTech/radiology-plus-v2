@@ -57,6 +57,26 @@ html, body {
   }
 }
 
+/* Status-banner marquee (admin-toggled "Animated"): the message scrolls right-to-left
+ * across the bar at a constant color. Under prefers-reduced-motion it falls back to a
+ * static, readable line instead of scrolling. */
+@keyframes banner-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-100%); }
+}
+.banner-marquee {
+  padding-left: 100%;
+  animation: banner-marquee 16s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner-marquee {
+    padding-left: 0;
+    white-space: normal;
+    transform: none;
+    animation: none;
+  }
+}
+
 /* Print-only-the-report support. While `printing-report` is on <html>, hide every
  * element except the descendants of `.report-print-target`. The target gets absolute
  * positioning so it occupies the whole printed page instead of inheriting the layout

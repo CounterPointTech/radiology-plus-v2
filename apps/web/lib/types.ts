@@ -37,6 +37,59 @@ export function canManageTemplates(role: Role | string): boolean {
   return role === "NRS" || role === "Admin";
 }
 
+export function canAccessAdmin(role: Role | string): boolean {
+  return role === "NRS" || role === "Admin";
+}
+
+// ---------------------------------------------------------------------------
+// Status banner (core.status_banners) — admin-authored app-wide notice.
+// Mirror of RadiologyPlus.Core/Announcements/AnnouncementModels.cs.
+// severity: 1 info · 2 maintenance · 3 warning · 4 critical.
+// ---------------------------------------------------------------------------
+
+export const BannerSeverity = {
+  Info: 1,
+  Maintenance: 2,
+  Warning: 3,
+  Critical: 4,
+} as const;
+
+export interface StatusBanner {
+  bannerId: number;
+  tenantId: string;
+  message: string;
+  severity: number;
+  isAnimated: boolean;
+  marqueeSpeed: number; // 1-10, scroll speed when animated
+  isActive: boolean;
+  startsAt: string | null; // ISO; null = show immediately
+  endsAt: string | null; // ISO; null = no auto-expire
+  facilityId: number | null; // null = all facilities (v1 always null)
+  isDismissible: boolean;
+  createdByUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BannerCreateRequest {
+  message: string;
+  severity: number;
+  isAnimated: boolean;
+  isActive: boolean;
+  marqueeSpeed?: number; // 1-10; defaults to 5
+  startsAt?: string | null;
+  endsAt?: string | null;
+}
+
+export interface BannerUpdateRequest {
+  message: string;
+  severity: number;
+  isAnimated: boolean;
+  marqueeSpeed?: number; // 1-10; defaults to 5
+  startsAt?: string | null;
+  endsAt?: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Billing (Phase 2)
 // ---------------------------------------------------------------------------

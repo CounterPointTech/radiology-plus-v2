@@ -2,6 +2,8 @@
 
 import { apiClient, get, getBlob, post } from "./api-client";
 import type {
+  BannerCreateRequest,
+  BannerUpdateRequest,
   BulkImportResult,
   CandidateOrder,
   ComparisonCandidate,
@@ -28,6 +30,7 @@ import type {
   StudyMergeRequest,
   ServiceCodeMapping,
   StartValidationRequest,
+  StatusBanner,
   StepRequest,
   TechNotesTemplate,
   TemplateUpsertRequest,
@@ -285,5 +288,45 @@ export const billingApi = {
 
   bulkImportCrosswalk(req: CrosswalkBulkImportRequest) {
     return post<BulkImportResult>("/billing/crosswalk/bulk", req);
+  },
+};
+
+// ---------------------------------------------------------------------------
+// Admin — status banner (core.status_banners)
+// ---------------------------------------------------------------------------
+
+export const adminApi = {
+  /** The poll target: the single active banner for this tenant, or null. Authenticated. */
+  activeBanner() {
+    return get<StatusBanner | null>("/announcements/active");
+  },
+
+  /** Admin: list all banners (active + inactive), newest first. */
+  listBanners(params?: { limit?: number }) {
+    return get<StatusBanner[]>("/announcements/banners", params);
+  },
+
+  createBanner(req: BannerCreateRequest) {
+    return post<StatusBanner>("/announcements/banners", req);
+  },
+
+  async updateBanner(bannerId: number, req: BannerUpdateRequest) {
+    const res = await apiClient.put<StatusBanner>(
+      `/announcements/banners/${bannerId}`,
+      req,
+    );
+    return res.data;
+  },
+
+  async setBannerActive(bannerId: number, isActive: boolean) {
+    const res = await apiClient.patch<StatusBanner>(
+      `/announcements/banners/${bannerId}/active`,
+      { isActive },
+    );
+    return res.data;
+  },
+
+  async deleteBanner(bannerId: number) {
+    await apiClient.delete(`/announcements/banners/${bannerId}`);
   },
 };
