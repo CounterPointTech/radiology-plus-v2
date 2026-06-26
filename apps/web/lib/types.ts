@@ -346,6 +346,7 @@ export interface ServiceCodeMapping {
   serviceCode: string;
   cptCode: string;
   status: CrosswalkStatus;
+  siteCode: string | null;     // null = tenant-wide default; set = site-specific (raw Novarad site_code)
   source: CrosswalkSource;
   note: string | null;
   approvedForDescription: string | null;
@@ -370,6 +371,7 @@ export interface CrosswalkUpsertRequest {
   status?: CrosswalkStatus;
   note?: string | null;
   approvedForDescription?: string | null;
+  siteCode?: string | null; // null = tenant-wide default; set = site-specific
 }
 
 export interface CrosswalkSuggestion {
@@ -391,12 +393,14 @@ export interface BulkImportRow {
   serviceCode: string;
   cptCode: string;
   note?: string | null;
+  siteCode?: string | null; // null = tenant-wide default; set = site-specific
 }
 
 export interface BulkImportRowResult {
   serviceCode: string;
   outcome: "inserted" | "updated" | "skipped" | "error";
   error: string | null;
+  siteCode: string | null;
 }
 
 export interface BulkImportResult {

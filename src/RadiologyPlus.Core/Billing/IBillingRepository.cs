@@ -167,10 +167,15 @@ public interface IBillingRepository
         short? status,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Get a single crosswalk row by service_code; null if not present.</summary>
+    /// <summary>
+    /// Get a single crosswalk row by service_code and site scope; null if not present.
+    /// <paramref name="siteCode"/> null = the tenant-wide default row; set = the
+    /// site-specific row for that Novarad site_code.
+    /// </summary>
     Task<ServiceCodeMapping?> GetCrosswalkAsync(
         Guid tenantId,
         string serviceCode,
+        string? siteCode = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

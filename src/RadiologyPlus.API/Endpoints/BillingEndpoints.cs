@@ -587,8 +587,9 @@ public static class BillingEndpoints
 
         // A suppressed mapping makes the suggester return empty — we surface
         // that explicitly so the UI can show "this code is suppressed; re-approve
-        // to credit" instead of a confusing empty result.
-        var existing = await repo.GetCrosswalkAsync(user.TenantId, serviceCode, ct);
+        // to credit" instead of a confusing empty result. Suggestions are
+        // site-independent, so this checks the tenant-wide default row.
+        var existing = await repo.GetCrosswalkAsync(user.TenantId, serviceCode, siteCode: null, ct);
         if (existing is { Status: 2 })
             return Results.Ok(new { serviceCode, suppressed = true, candidates = Array.Empty<CrosswalkSuggestion>() });
 
@@ -620,10 +621,11 @@ public static class BillingEndpoints
         var validation = ValidateUpsert(req);
         if (validation is not null) return validation;
 
-        // Create-only: if a row already exists for (tenant, service_code), return
-        // 409 with the current mapping so the UI can refetch and show
-        // "another user just mapped this to X" rather than a generic error.
-        var existing = await repo.GetCrosswalkAsync(user.TenantId, req.ServiceCode, ct);
+        // Create-only: if a row already exists for (tenant, service_code, site),
+        // return 409 with the current mapping so the UI can refetch and show
+        // "another user just mapped this to X" rather than a generic error. The
+        // site scope matters — a site row must not trip on the tenant default.
+        var existing = await repo.GetCrosswalkAsync(user.TenantId, req.ServiceCode, req.SiteCode, ct);
         if (existing is not null)
             return Results.Conflict(new { error = "A mapping for that service_code already exists.", existing });
 
@@ -633,7 +635,8 @@ public static class BillingEndpoints
             Source:                 req.Source ?? (short)1,           // default to manual
             Status:                 req.Status,
             Note:                   req.Note,
-            ApprovedForDescription: req.ApprovedForDescription);
+            ApprovedForDescription: req.ApprovedForDescription,
+            SiteCode:               req.SiteCode);
 
         CrosswalkUpsertResult result;
         try
@@ -643,14 +646,15 @@ public static class BillingEndpoints
         catch (PostgresException ex) when (ex.SqlState == PostgresErrorCodes.UniqueViolation)
         {
             // Race: another writer beat us between the Get and the Upsert.
-            var fresh = await repo.GetCrosswalkAsync(user.TenantId, req.ServiceCode, ct);
+            var fresh = await repo.GetCrosswalkAsync(user.TenantId, req.ServiceCode, req.SiteCode, ct);
             return Results.Conflict(new { error = "A mapping for that service_code already exists.", existing = fresh });
         }
 
         await audit.WriteSuccessAsync(
             user.TenantId, user, AccessAction.Create,
             $"billing.service_code_crosswalk {result.Mapping.ServiceCode}→{result.Mapping.CptCode} " +
-                $"(source={result.Mapping.Source} status={result.Mapping.Status})",
+                $"(source={result.Mapping.Source} status={result.Mapping.Status} " +
+                $"scope={result.Mapping.SiteCode ?? "tenant-wide"})",
             http, ct);
 
         return Results.Ok(result.Mapping);
@@ -674,7 +678,7 @@ public static class BillingEndpoints
         var validation = ValidateUpsert(corrected);
         if (validation is not null) return validation;
 
-        var before = await repo.GetCrosswalkAsync(user.TenantId, serviceCode, ct);
+        var before = await repo.GetCrosswalkAsync(user.TenantId, serviceCode, corrected.SiteCode, ct);
         if (before is null)
             return Results.NotFound(new { error = $"No crosswalk row for service_code='{serviceCode}'." });
 
@@ -684,13 +688,15 @@ public static class BillingEndpoints
             Source:                 corrected.Source ?? before.Source,
             Status:                 corrected.Status ?? before.Status,
             Note:                   corrected.Note ?? before.Note,
-            ApprovedForDescription: corrected.ApprovedForDescription);
+            ApprovedForDescription: corrected.ApprovedForDescription,
+            SiteCode:               corrected.SiteCode);
 
         var result = await repo.UpsertCrosswalkAsync(user.TenantId, user.UserId, upsert, ct);
 
         await audit.WriteSuccessAsync(
             user.TenantId, user, AccessAction.Update,
-            $"billing.service_code_crosswalk {result.Mapping.ServiceCode}: " +
+            $"billing.service_code_crosswalk {result.Mapping.ServiceCode} " +
+                $"(scope={result.Mapping.SiteCode ?? "tenant-wide"}): " +
                 $"cpt {before.CptCode}→{result.Mapping.CptCode}, " +
                 $"status {before.Status}→{result.Mapping.Status}",
             http, ct);
@@ -751,6 +757,8 @@ public static class BillingEndpoints
             return Results.BadRequest(new { error = "status must be 1 (approved) or 2 (suppressed)." });
         if (req.Source is not null and not (1 or 2 or 3))
             return Results.BadRequest(new { error = "source must be 1 (manual), 2 (suggested), or 3 (bulk)." });
+        if (req.SiteCode is not null && string.IsNullOrWhiteSpace(req.SiteCode))
+            return Results.BadRequest(new { error = "siteCode must be a non-empty site, or omitted for tenant-wide." });
         return null;
     }
 }
@@ -778,7 +786,8 @@ public sealed record CrosswalkUpsertRequest(
     short? Source = null,
     short? Status = null,
     string? Note = null,
-    string? ApprovedForDescription = null);
+    string? ApprovedForDescription = null,
+    string? SiteCode = null);                          // null = tenant-wide default; set = site-specific
 
 public sealed record CrosswalkBulkImportRequest(
     IReadOnlyList<BulkImportRow> Rows,

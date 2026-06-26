@@ -159,6 +159,7 @@ public sealed record ServiceCodeMapping(
     string ServiceCode,
     string CptCode,
     short Status,
+    string? SiteCode,                                   // null = tenant-wide default; set = site-specific (raw Novarad site_code)
     short Source,
     string? Note,
     string? ApprovedForDescription,
@@ -177,7 +178,8 @@ public sealed record ServiceCodeMappingUpsert(
     short Source,                                       // 1 manual / 2 suggested / 3 bulk
     short? Status = null,                               // null on insert → defaults to 1 (approved)
     string? Note = null,
-    string? ApprovedForDescription = null);
+    string? ApprovedForDescription = null,
+    string? SiteCode = null);                           // null = tenant-wide default; set = site-specific
 
 /// <summary>Returned from UpsertCrosswalkAsync.</summary>
 public sealed record CrosswalkUpsertResult(ServiceCodeMapping Mapping, bool Inserted);
@@ -190,14 +192,16 @@ public sealed record CrosswalkSuggestion(
     decimal Score,                                      // 0..1; 1.0 for exact-code hit
     string HitKind);                                    // "exact_code" | "description"
 
-/// <summary>One row of a bulk-import payload.</summary>
-public sealed record BulkImportRow(string ServiceCode, string CptCode, string? Note);
+/// <summary>One row of a bulk-import payload. SiteCode null = tenant-wide default.</summary>
+public sealed record BulkImportRow(string ServiceCode, string CptCode, string? Note, string? SiteCode = null);
 
-/// <summary>Per-row outcome of a bulk import.</summary>
+/// <summary>Per-row outcome of a bulk import. SiteCode echoes the row's scope so callers
+/// can disambiguate a code applied to several sites in one batch.</summary>
 public sealed record BulkImportRowResult(
     string ServiceCode,
     string Outcome,                                     // "inserted" | "updated" | "skipped" | "error"
-    string? Error);
+    string? Error,
+    string? SiteCode = null);
 
 /// <summary>Bulk-import summary returned to the API client.</summary>
 public sealed record BulkImportResult(

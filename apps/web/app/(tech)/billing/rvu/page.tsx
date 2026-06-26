@@ -5,6 +5,7 @@ import { AlertCircle, Check, ExternalLink, Pencil, Search, X } from "lucide-reac
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { ImportUploader } from "@/components/billing/import-uploader";
 import { RvuImportUploader } from "@/components/billing/rvu-import-uploader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -88,11 +89,11 @@ export default function RvuPage() {
             Billing
           </p>
           <h1 className="text-3xl mt-1" style={{ fontFamily: "var(--font-display)" }}>
-            RVU values
+            CPT &amp; RVU
           </h1>
           <p className="text-sm text-[color:var(--color-muted-fg)] mt-1">
-            The CMS PFS relative-value source of truth, and how the CPT master
-            reconciles against it.
+            The CPT master and its work RVUs, the CMS PFS source of truth it
+            reconciles against, and per-site overrides.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -399,6 +400,14 @@ function MasterOverridesTab({ year }: { year: number }) {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cms-check", year] }),
   });
 
+  // Edit the underlying CPT master row (description / work RVU) — the capability
+  // formerly on the standalone CPT master page, now merged here.
+  const patch = useMutation({
+    mutationFn: (v: { code: string; workRvu?: number; description?: string }) =>
+      billingApi.patchCptCode(v.code, { year, workRvu: v.workRvu, description: v.description }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cms-check", year] }),
+  });
+
   const all = check.data ?? [];
   const nonReconcilingCount = useMemo(
     () => all.filter((r) => isNonReconciling(r.verdict)).length,
@@ -424,6 +433,14 @@ function MasterOverridesTab({ year }: { year: number }) {
 
   return (
     <>
+      <ImportUploader
+        year={year}
+        onImported={() => {
+          queryClient.invalidateQueries({ queryKey: ["cms-check", year] });
+          queryClient.invalidateQueries({ queryKey: ["cpt-imports"] });
+        }}
+      />
+
       <div className="mb-3 flex flex-wrap items-center gap-3">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-[color:var(--color-muted-fg)]" />
@@ -509,8 +526,10 @@ function MasterOverridesTab({ year }: { year: number }) {
                     key={r.code}
                     row={r}
                     saving={pendingCode === r.code}
+                    patching={patch.isPending && patch.variables?.code === r.code}
                     onSave={(v) => upsert.mutate({ code: r.code, overrideWorkRvu: v })}
                     onClear={() => clear.mutate(r.code)}
+                    onPatch={(p) => patch.mutate({ code: r.code, ...p })}
                   />
                 ))
               )}
@@ -534,13 +553,17 @@ function isNonReconciling(verdict: CptMasterCmsRow["verdict"]): boolean {
 function MasterRow({
   row,
   saving,
+  patching,
   onSave,
   onClear,
+  onPatch,
 }: {
   row: CptMasterCmsRow;
   saving: boolean;
+  patching: boolean;
   onSave: (value: number) => void;
   onClear: () => void;
+  onPatch: (patch: { workRvu?: number; description?: string }) => void;
 }) {
   return (
     <tr className="border-t border-[color:var(--color-border)] hover:bg-[color:var(--color-surface-2)]/50 align-top">
@@ -557,11 +580,28 @@ function MasterRow({
         )}
       </td>
       <td className="px-4 py-2.5 max-w-sm">
-        <span className="line-clamp-2" title={row.description}>
-          {row.description}
-        </span>
+        <EditableCell
+          value={row.description}
+          type="text"
+          ariaLabel={`Description for ${row.code}`}
+          saving={patching}
+          onSave={(v) => (v !== row.description ? onPatch({ description: v }) : undefined)}
+        />
       </td>
-      <td className="px-4 py-2.5 font-mono text-right tabular-nums">{fmt(row.masterWorkRvu)}</td>
+      <td className="px-4 py-2.5 font-mono text-right tabular-nums">
+        <EditableCell
+          value={row.masterWorkRvu == null ? "" : row.masterWorkRvu.toFixed(2)}
+          type="number"
+          align="right"
+          ariaLabel={`Master work RVU for ${row.code}`}
+          saving={patching}
+          onSave={(v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n) || n < 0) return;
+            if (n !== row.masterWorkRvu) onPatch({ workRvu: n });
+          }}
+        />
+      </td>
       <td className="px-4 py-2.5">
         <CmsCheckBadge row={row} />
       </td>
@@ -756,6 +796,112 @@ function OverrideCell({
         Set override
       </Button>
       {saving ? <Spinner size={12} /> : null}
+    </span>
+  );
+}
+
+// Inline edit for the master row's description / work RVU (merged from the former
+// CPT master page). Click to edit; Enter/blur commits, Escape cancels.
+function EditableCell({
+  value,
+  type,
+  ariaLabel,
+  saving,
+  align = "left",
+  onSave,
+}: {
+  value: string;
+  type: "text" | "number";
+  ariaLabel: string;
+  saving: boolean;
+  align?: "left" | "right";
+  onSave: (next: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (!editing) setDraft(value);
+  }, [value, editing]);
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
+  function commit() {
+    setEditing(false);
+    onSave(draft.trim());
+  }
+  function cancel() {
+    setDraft(value);
+    setEditing(false);
+  }
+
+  if (!editing) {
+    return (
+      <button
+        type="button"
+        onClick={() => setEditing(true)}
+        disabled={saving}
+        className={cn(
+          "block w-full -mx-1 px-1 py-0.5 rounded text-left hover:bg-[color:var(--color-surface-2)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/50",
+          align === "right" && "text-right",
+        )}
+        aria-label={`Edit ${ariaLabel}`}
+      >
+        {value || <span className="text-[color:var(--color-muted-fg)] italic">empty</span>}
+        {saving ? (
+          <span className="ml-2 inline-block align-middle">
+            <Spinner size={10} />
+          </span>
+        ) : null}
+      </button>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 w-full">
+      <input
+        ref={inputRef}
+        type={type}
+        step={type === "number" ? "0.01" : undefined}
+        min={type === "number" ? 0 : undefined}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            cancel();
+          }
+        }}
+        onBlur={commit}
+        aria-label={ariaLabel}
+        className={cn(
+          "flex-1 min-w-0 rounded border border-[color:var(--color-accent)]/60 bg-[color:var(--color-surface)] px-2 py-1 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/60",
+          align === "right" && "text-right tabular-nums",
+        )}
+      />
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={commit}
+        className="text-[color:var(--color-accent)] hover:opacity-80"
+        aria-label="Save"
+      >
+        <Check className="size-4" />
+      </button>
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={cancel}
+        className="text-[color:var(--color-muted-fg)] hover:opacity-80"
+        aria-label="Cancel"
+      >
+        <X className="size-4" />
+      </button>
     </span>
   );
 }

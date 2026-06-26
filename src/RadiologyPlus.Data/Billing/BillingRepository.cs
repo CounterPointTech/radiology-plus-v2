@@ -891,7 +891,7 @@ public sealed class BillingRepository : IBillingRepository
         var crosswalk = await LoadCrosswalkAsync(conn, tx, tenantId, cancellationToken);
 
         // 3. Run the matcher in memory — pure CPU, no DB.
-        var (aggregated, notes, appliedCrosswalkCodes) =
+        var (aggregated, notes, appliedCrosswalkIds) =
             MatchAndAggregate(source, master, crosswalk, facilityBySite);
 
         // 4. Compute run-level rollups from the aggregated line items.
@@ -1019,7 +1019,7 @@ public sealed class BillingRepository : IBillingRepository
         // 7. Crosswalk telemetry — bump applied_count + last_used_at on the
         //    rows that actually fired this run. Lets Amber spot stale mappings
         //    in the management UI.
-        if (appliedCrosswalkCodes.Count > 0)
+        if (appliedCrosswalkIds.Count > 0)
         {
             await using var bump = conn.CreateCommand();
             bump.Transaction = tx;
@@ -1027,11 +1027,11 @@ public sealed class BillingRepository : IBillingRepository
                 UPDATE billing.service_code_crosswalk
                 SET applied_count = applied_count + 1,
                     last_used_at  = LOCALTIMESTAMP
-                WHERE tenant_id = @t AND service_code = ANY(@codes)
+                WHERE tenant_id = @t AND crosswalk_id = ANY(@ids)
                 """;
             bump.Parameters.AddWithValue("t", tenantId);
-            bump.Parameters.Add(new NpgsqlParameter("codes", NpgsqlDbType.Array | NpgsqlDbType.Text)
-                { Value = appliedCrosswalkCodes.ToArray() });
+            bump.Parameters.Add(new NpgsqlParameter("ids", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
+                { Value = appliedCrosswalkIds.ToArray() });
             await bump.ExecuteNonQueryAsync(cancellationToken);
         }
 
@@ -1064,16 +1064,16 @@ public sealed class BillingRepository : IBillingRepository
 
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         MasterIndex master;
-        IReadOnlyDictionary<string, string> crosswalk;
+        CrosswalkIndex crosswalk;
         Dictionary<string, long> facilityBySite;
         await using (var tx = await conn.BeginTransactionAsync(cancellationToken))
         {
             var years = source.Select(s => (short)s.SignedAt.Year).Distinct().ToArray();
             master = await LoadMasterForYearsAsync(conn, tx, tenantId, years, cancellationToken);
-            // Apply the crosswalk to the unmapped report as well, so codes with an
-            // approved mapping disappear from the list once the matcher would credit
-            // them. Suppressed (status=2) rows are absent from the dict and therefore
-            // stay on the report — exactly the desired semantics.
+            // Apply the crosswalk to the unmapped report as well, so codes the matcher
+            // would credit disappear from the list. Resolution is facility-aware, so a
+            // code can stay unmapped at one facility while being credited at another;
+            // the per-site breakdown below reflects only the still-uncredited sites.
             crosswalk = await LoadCrosswalkAsync(conn, tx, tenantId, cancellationToken);
             // site_code → facility_id so each per-site breakdown carries the local id
             // (usually null — the customer's Novarad site_codes aren't all mapped).
@@ -1089,9 +1089,12 @@ public sealed class BillingRepository : IBillingRepository
         {
             var rows = procGroup.ToList();
             var year = (short)rows[0].SignedAt.Year;
+            // site_code is constant across a procedure's service lines and is the
+            // crosswalk's site-scope key.
+            var siteCode = rows[0].SiteCode;
             // Resolve via crosswalk BEFORE computing distinct/setKey so a procedure
             // now bundle-credited via a mapped CPT no longer leaks into the report.
-            var distinct = rows.Select(r => ResolveCode(r.CptCode, crosswalk).ResolvedCode).Distinct().ToArray();
+            var distinct = rows.Select(r => ResolveCode(r.CptCode, siteCode, crosswalk).ResolvedCode).Distinct().ToArray();
             var setKey = NormalizeCptSetKey(distinct);
 
             // Procedure credited as a bundle → nothing uncredited here.
@@ -1100,7 +1103,7 @@ public sealed class BillingRepository : IBillingRepository
 
             foreach (var row in rows)
             {
-                var (code, _) = ResolveCode(row.CptCode, crosswalk);
+                var (code, _, _) = ResolveCode(row.CptCode, siteCode, crosswalk);
                 if (master.Singletons.ContainsKey((year, code)))
                     continue; // credited as a singleton (possibly via crosswalk)
 
@@ -1266,8 +1269,8 @@ public sealed class BillingRepository : IBillingRepository
     // Full projection used by list/get/upsert/set-status reads. Joins identity.users
     // so the UI can render created_by_display_name without a second round-trip.
     private const string CrosswalkProjection = """
-        SELECT x.crosswalk_id, x.service_code, x.cpt_code, x.status, x.source,
-               x.note, x.approved_for_description, x.applied_count, x.last_used_at,
+        SELECT x.crosswalk_id, x.service_code, x.cpt_code, x.status, x.site_code,
+               x.source, x.note, x.approved_for_description, x.applied_count, x.last_used_at,
                x.created_by_user_id, u.display_name AS created_by_display_name,
                x.updated_by_user_id, x.created_at, x.updated_at
         FROM billing.service_code_crosswalk x
@@ -1279,16 +1282,17 @@ public sealed class BillingRepository : IBillingRepository
         ServiceCode:            r.GetString(1),
         CptCode:                r.GetString(2),
         Status:                 r.GetInt16(3),
-        Source:                 r.GetInt16(4),
-        Note:                   r.IsDBNull(5) ? null : r.GetString(5),
-        ApprovedForDescription: r.IsDBNull(6) ? null : r.GetString(6),
-        AppliedCount:           r.GetInt64(7),
-        LastUsedAt:             r.IsDBNull(8) ? null : new DateTimeOffset(r.GetDateTime(8), TimeSpan.Zero),
-        CreatedByUserId:        r.GetGuid(9),
-        CreatedByDisplayName:   r.IsDBNull(10) ? null : r.GetString(10),
-        UpdatedByUserId:        r.IsDBNull(11) ? null : r.GetGuid(11),
-        CreatedAt:              new DateTimeOffset(r.GetDateTime(12), TimeSpan.Zero),
-        UpdatedAt:              new DateTimeOffset(r.GetDateTime(13), TimeSpan.Zero));
+        SiteCode:               r.IsDBNull(4) ? null : r.GetString(4),
+        Source:                 r.GetInt16(5),
+        Note:                   r.IsDBNull(6) ? null : r.GetString(6),
+        ApprovedForDescription: r.IsDBNull(7) ? null : r.GetString(7),
+        AppliedCount:           r.GetInt64(8),
+        LastUsedAt:             r.IsDBNull(9) ? null : new DateTimeOffset(r.GetDateTime(9), TimeSpan.Zero),
+        CreatedByUserId:        r.GetGuid(10),
+        CreatedByDisplayName:   r.IsDBNull(11) ? null : r.GetString(11),
+        UpdatedByUserId:        r.IsDBNull(12) ? null : r.GetGuid(12),
+        CreatedAt:              new DateTimeOffset(r.GetDateTime(13), TimeSpan.Zero),
+        UpdatedAt:              new DateTimeOffset(r.GetDateTime(14), TimeSpan.Zero));
 
     public async Task<IReadOnlyList<ServiceCodeMapping>> ListCrosswalkAsync(
         Guid tenantId, short? status, CancellationToken cancellationToken = default)
@@ -1311,16 +1315,21 @@ public sealed class BillingRepository : IBillingRepository
     }
 
     public async Task<ServiceCodeMapping?> GetCrosswalkAsync(
-        Guid tenantId, string serviceCode, CancellationToken cancellationToken = default)
+        Guid tenantId, string serviceCode, string? siteCode = null,
+        CancellationToken cancellationToken = default)
     {
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
+        // IS NOT DISTINCT FROM so a null siteCode matches the tenant-wide row.
         cmd.CommandText = CrosswalkProjection + """
 
             WHERE x.tenant_id = @t AND x.service_code = @sc
+              AND x.site_code IS NOT DISTINCT FROM @site
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("sc", NormalizeCpt(serviceCode));
+        cmd.Parameters.Add(new NpgsqlParameter("site", NpgsqlDbType.Text)
+            { Value = (object?)siteCode ?? DBNull.Value });
         await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
         return await rdr.ReadAsync(cancellationToken) ? ReadCrosswalk(rdr) : null;
     }
@@ -1338,15 +1347,20 @@ public sealed class BillingRepository : IBillingRepository
         await using (var cmd = conn.CreateCommand())
         {
             cmd.Transaction = tx;
+            // One ON CONFLICT can name only one index, so pick the conflict target at
+            // runtime by site scope (mirrors UpsertRvuOverrideAsync's two-path).
+            var conflictTarget = upsert.SiteCode is null
+                ? "(tenant_id, service_code) WHERE site_code IS NULL"
+                : "(tenant_id, service_code, site_code) WHERE site_code IS NOT NULL";
             // approved_for_description is preserved across UPDATEs unless the caller
             // sends a non-null replacement — the snapshot at first approval is the
             // load-bearing audit artifact; later edits shouldn't silently overwrite it.
-            cmd.CommandText = """
+            cmd.CommandText = $"""
                 INSERT INTO billing.service_code_crosswalk
-                    (tenant_id, service_code, cpt_code, status, source, note,
+                    (tenant_id, service_code, cpt_code, status, site_code, source, note,
                      approved_for_description, created_by_user_id, updated_by_user_id)
-                VALUES (@t, @sc, @cpt, COALESCE(@status, 1::smallint), @source, @note, @afd, @u, @u)
-                ON CONFLICT (tenant_id, service_code) DO UPDATE
+                VALUES (@t, @sc, @cpt, COALESCE(@status, 1::smallint), @site, @source, @note, @afd, @u, @u)
+                ON CONFLICT {conflictTarget} DO UPDATE
                     SET cpt_code                 = EXCLUDED.cpt_code,
                         status                   = EXCLUDED.status,
                         source                   = EXCLUDED.source,
@@ -1362,6 +1376,8 @@ public sealed class BillingRepository : IBillingRepository
             cmd.Parameters.AddWithValue("cpt", NormalizeCpt(upsert.CptCode));
             cmd.Parameters.Add(new NpgsqlParameter("status", NpgsqlDbType.Smallint)
                 { Value = (object?)upsert.Status ?? DBNull.Value });
+            cmd.Parameters.Add(new NpgsqlParameter("site", NpgsqlDbType.Text)
+                { Value = (object?)upsert.SiteCode ?? DBNull.Value });
             cmd.Parameters.AddWithValue("source", upsert.Source);
             cmd.Parameters.Add(new NpgsqlParameter("note", NpgsqlDbType.Text)
                 { Value = (object?)upsert.Note ?? DBNull.Value });
@@ -1402,12 +1418,16 @@ public sealed class BillingRepository : IBillingRepository
         long id;
         await using (var cmd = conn.CreateCommand())
         {
+            // Scope to the tenant-wide row (site_code IS NULL): the partial unique
+            // indexes now allow same-code rows per site, and this path isn't wired
+            // to an endpoint (the UI toggles status via the scope-aware Upsert), so
+            // restricting to the default row keeps it single-row and unambiguous.
             cmd.CommandText = """
                 UPDATE billing.service_code_crosswalk
                 SET status             = @s,
                     updated_by_user_id = @u,
                     updated_at         = NOW()
-                WHERE tenant_id = @t AND service_code = @sc
+                WHERE tenant_id = @t AND service_code = @sc AND site_code IS NULL
                 RETURNING crosswalk_id
                 """;
             cmd.Parameters.AddWithValue("t", tenantId);
@@ -1441,75 +1461,103 @@ public sealed class BillingRepository : IBillingRepository
         var scArr = new string[n];
         var cptArr = new string[n];
         var noteArr = new string?[n];
+        var siteArr = new string?[n];
         for (int i = 0; i < n; i++)
         {
             scArr[i]  = NormalizeCpt(rows[i].ServiceCode);
             cptArr[i] = NormalizeCpt(rows[i].CptCode);
             noteArr[i] = rows[i].Note;
+            siteArr[i] = rows[i].SiteCode;
         }
 
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         await using var tx = await conn.BeginTransactionAsync(cancellationToken);
 
-        // source=3 (bulk). ON CONFLICT branch chosen at runtime — skip vs. update.
-        var conflictClause = updateOnConflict
-            ? """
-              ON CONFLICT (tenant_id, service_code) DO UPDATE
-                  SET cpt_code           = EXCLUDED.cpt_code,
-                      source             = 3,
-                      note               = EXCLUDED.note,
-                      updated_by_user_id = EXCLUDED.updated_by_user_id,
-                      updated_at         = NOW()
-              """
-            : "ON CONFLICT (tenant_id, service_code) DO NOTHING";
+        // A single ON CONFLICT can name only one index, and a batch may mix tenant-wide
+        // (site_code NULL) and site-specific rows. Run one INSERT per scope in the same
+        // transaction; outcomes are keyed by (service_code, site_code) so a code applied
+        // to several sites doesn't collide.
+        var outcome = new Dictionary<(string Code, string? SiteCode), string>();
 
-        await using var cmd = conn.CreateCommand();
-        cmd.Transaction = tx;
-        cmd.CommandText = $$"""
-            WITH new_rows AS (
-                SELECT UNNEST(@sc)   AS service_code,
-                       UNNEST(@cpt)  AS cpt_code,
-                       UNNEST(@note) AS note
-            ),
-            ins AS (
-                INSERT INTO billing.service_code_crosswalk
-                    (tenant_id, service_code, cpt_code, status, source, note,
-                     created_by_user_id, updated_by_user_id)
-                SELECT @t, service_code, cpt_code, 1::smallint, 3::smallint, note, @u, @u
-                FROM new_rows
-                {{conflictClause}}
-                RETURNING service_code, (xmax = 0) AS inserted
-            )
-            SELECT service_code, inserted FROM ins
-            """;
-        cmd.Parameters.AddWithValue("t", tenantId);
-        cmd.Parameters.AddWithValue("u", userId);
-        cmd.Parameters.Add(new NpgsqlParameter("sc", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = scArr });
-        cmd.Parameters.Add(new NpgsqlParameter("cpt", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = cptArr });
-        cmd.Parameters.Add(new NpgsqlParameter("note", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = noteArr });
-
-        var outcomeByCode = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        await using (var rdr = await cmd.ExecuteReaderAsync(cancellationToken))
+        async Task RunGroupAsync(IReadOnlyList<int> idxs, bool siteScoped)
         {
+            if (idxs.Count == 0) return;
+            var sc = idxs.Select(i => scArr[i]).ToArray();
+            var cpt = idxs.Select(i => cptArr[i]).ToArray();
+            var note = idxs.Select(i => noteArr[i]).ToArray();
+
+            var conflictTarget = siteScoped
+                ? "(tenant_id, service_code, site_code) WHERE site_code IS NOT NULL"
+                : "(tenant_id, service_code) WHERE site_code IS NULL";
+            var conflictClause = updateOnConflict
+                ? $$"""
+                  ON CONFLICT {{conflictTarget}} DO UPDATE
+                      SET cpt_code           = EXCLUDED.cpt_code,
+                          source             = 3,
+                          note               = EXCLUDED.note,
+                          updated_by_user_id = EXCLUDED.updated_by_user_id,
+                          updated_at         = NOW()
+                  """
+                : $"ON CONFLICT {conflictTarget} DO NOTHING";
+
+            // Site group threads UNNEST(@site); tenant-wide group inserts NULL.
+            var siteCols = siteScoped ? ", UNNEST(@site) AS site_code" : "";
+            var siteValue = siteScoped ? "site_code" : "NULL::text";
+
+            await using var cmd = conn.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = $$"""
+                WITH new_rows AS (
+                    SELECT UNNEST(@sc)   AS service_code,
+                           UNNEST(@cpt)  AS cpt_code,
+                           UNNEST(@note) AS note{{siteCols}}
+                ),
+                ins AS (
+                    INSERT INTO billing.service_code_crosswalk
+                        (tenant_id, service_code, cpt_code, status, site_code, source, note,
+                         created_by_user_id, updated_by_user_id)
+                    SELECT @t, service_code, cpt_code, 1::smallint, {{siteValue}}, 3::smallint, note, @u, @u
+                    FROM new_rows
+                    {{conflictClause}}
+                    RETURNING service_code, site_code, (xmax = 0) AS inserted
+                )
+                SELECT service_code, site_code, inserted FROM ins
+                """;
+            cmd.Parameters.AddWithValue("t", tenantId);
+            cmd.Parameters.AddWithValue("u", userId);
+            cmd.Parameters.Add(new NpgsqlParameter("sc", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = sc });
+            cmd.Parameters.Add(new NpgsqlParameter("cpt", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = cpt });
+            cmd.Parameters.Add(new NpgsqlParameter("note", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = note });
+            if (siteScoped)
+                cmd.Parameters.Add(new NpgsqlParameter("site", NpgsqlDbType.Array | NpgsqlDbType.Text)
+                    { Value = idxs.Select(i => siteArr[i]).ToArray() });
+
+            await using var rdr = await cmd.ExecuteReaderAsync(cancellationToken);
             while (await rdr.ReadAsync(cancellationToken))
             {
-                outcomeByCode[rdr.GetString(0)] = rdr.GetBoolean(1) ? "inserted" : "updated";
+                var code = rdr.GetString(0);
+                string? site = rdr.IsDBNull(1) ? null : rdr.GetString(1);
+                outcome[(code, site)] = rdr.GetBoolean(2) ? "inserted" : "updated";
             }
         }
+
+        var tenantIdxs = Enumerable.Range(0, n).Where(i => siteArr[i] is null).ToArray();
+        var siteIdxs   = Enumerable.Range(0, n).Where(i => siteArr[i] is not null).ToArray();
+        await RunGroupAsync(tenantIdxs, siteScoped: false);
+        await RunGroupAsync(siteIdxs, siteScoped: true);
 
         var results = new List<BulkImportRowResult>(n);
         int inserted = 0, updated = 0, skipped = 0;
         for (int i = 0; i < n; i++)
         {
-            var sc = scArr[i];
-            if (outcomeByCode.TryGetValue(sc, out var outcome))
+            if (outcome.TryGetValue((scArr[i], siteArr[i]), out var o))
             {
-                results.Add(new BulkImportRowResult(sc, outcome, null));
-                if (outcome == "inserted") inserted++; else updated++;
+                results.Add(new BulkImportRowResult(scArr[i], o, null, siteArr[i]));
+                if (o == "inserted") inserted++; else updated++;
             }
             else
             {
-                results.Add(new BulkImportRowResult(sc, "skipped", null));
+                results.Add(new BulkImportRowResult(scArr[i], "skipped", null, siteArr[i]));
                 skipped++;
             }
         }
@@ -1531,9 +1579,12 @@ public sealed class BillingRepository : IBillingRepository
         // Suppressed mapping → "do not suggest". Caller surfaces the hint.
         await using (var check = conn.CreateCommand())
         {
+            // Tenant-wide default row only: suggestions are site-independent, and
+            // restricting to site_code IS NULL keeps this a single deterministic row
+            // now that per-site rows can share a service_code.
             check.CommandText = """
                 SELECT status FROM billing.service_code_crosswalk
-                WHERE tenant_id = @t AND service_code = @sc
+                WHERE tenant_id = @t AND service_code = @sc AND site_code IS NULL
                 """;
             check.Parameters.AddWithValue("t", tenantId);
             check.Parameters.AddWithValue("sc", normalizedSc);
@@ -1939,22 +1990,41 @@ public sealed class BillingRepository : IBillingRepository
     // for the matcher. Only status=1 (approved) rows participate in crediting;
     // status=2 (suppressed) rows are deliberately absent so those codes fall
     // through to the missing-code path and stay on the unmapped report.
-    private static async Task<Dictionary<string, string>> LoadCrosswalkAsync(
+    // One resolved crosswalk row, as the matcher needs it.
+    private readonly record struct CrosswalkEntry(long CrosswalkId, string CptCode, short Status);
+
+    // Site-aware crosswalk: a site-specific row (any status) wins over the tenant-wide
+    // default at that site; the tenant-wide dict is the fallback. Both dicts carry
+    // suppressed (status=2) rows so an explicit suppression can block the fallback.
+    // Code keys are NormalizeCpt'd; site keys are the raw Novarad site_code verbatim.
+    private sealed record CrosswalkIndex(
+        IReadOnlyDictionary<(string SiteCode, string Code), CrosswalkEntry> BySite,
+        IReadOnlyDictionary<string, CrosswalkEntry> TenantWide);
+
+    private static async Task<CrosswalkIndex> LoadCrosswalkAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, Guid tenantId, CancellationToken ct)
     {
-        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var bySite = new Dictionary<(string, string), CrosswalkEntry>();
+        var tenantWide = new Dictionary<string, CrosswalkEntry>(StringComparer.OrdinalIgnoreCase);
         await using var cmd = conn.CreateCommand();
         cmd.Transaction = tx;
+        // Load BOTH scopes and BOTH statuses; resolution (ResolveCode) decides what
+        // credits. The partial unique indexes guarantee at most one row per key.
         cmd.CommandText = """
-            SELECT service_code, cpt_code
+            SELECT crosswalk_id, service_code, cpt_code, status, site_code
             FROM billing.service_code_crosswalk
-            WHERE tenant_id = @t AND status = 1
+            WHERE tenant_id = @t
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         await using var rdr = await cmd.ExecuteReaderAsync(ct);
         while (await rdr.ReadAsync(ct))
-            map[NormalizeCpt(rdr.GetString(0))] = NormalizeCpt(rdr.GetString(1));
-        return map;
+        {
+            var code = NormalizeCpt(rdr.GetString(1));
+            var entry = new CrosswalkEntry(rdr.GetInt64(0), NormalizeCpt(rdr.GetString(2)), rdr.GetInt16(3));
+            if (rdr.IsDBNull(4)) tenantWide[code] = entry;
+            else                 bySite[(rdr.GetString(4), code)] = entry;
+        }
+        return new CrosswalkIndex(bySite, tenantWide);
     }
 
     private static async Task<Dictionary<string, long>> LoadFacilityMapAsync(
@@ -1989,10 +2059,10 @@ public sealed class BillingRepository : IBillingRepository
     //
     // Then aggregate every emitted credit by (physician × site_code × master_code).
     //
-    private static (List<AggregatedLine>, List<ReconciliationNote>, HashSet<string>) MatchAndAggregate(
+    private static (List<AggregatedLine>, List<ReconciliationNote>, HashSet<long>) MatchAndAggregate(
         IReadOnlyList<SignedProcedureLineItem> source,
         MasterIndex master,
-        IReadOnlyDictionary<string, string> crosswalk,
+        CrosswalkIndex crosswalk,
         Dictionary<string, long> facilityBySite)
     {
         var notes = new List<ReconciliationNote>();
@@ -2005,10 +2075,10 @@ public sealed class BillingRepository : IBillingRepository
         foreach (var s in source)
             if (s.IsStat) statReportIds.Add(s.ReportId);
 
-        // Raw (normalized) service_codes that fired through the crosswalk this
-        // run. Returned to the caller so reconciliation can bump applied_count /
-        // last_used_at on the matching crosswalk rows.
-        var appliedCrosswalkRawCodes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // crosswalk_ids that fired this run (facility-specific or tenant-wide row).
+        // Returned to the caller so reconciliation can bump applied_count /
+        // last_used_at on exactly the rows that resolved a line.
+        var appliedCrosswalkIds = new HashSet<long>();
 
         // Codes seen on procedures that aren't in the master, accumulated by
         // (year, code) → distinct contributing reports. Emitted as one classified
@@ -2023,6 +2093,9 @@ public sealed class BillingRepository : IBillingRepository
             var rows = procGroup.ToList();
             var anyRow = rows[0];
             var year = (short)anyRow.SignedAt.Year;
+            // site_code is constant across a procedure's service lines and is the
+            // crosswalk's site-scope key (no facility lookup needed).
+            var siteCode = anyRow.SiteCode;
 
             // Per-CPT units & Novarad RVU for this procedure (multiple service
             // lines with the same CPT collapse here). Crosswalk resolution runs
@@ -2033,11 +2106,10 @@ public sealed class BillingRepository : IBillingRepository
             var viaCrosswalkCpts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var row in rows)
             {
-                var rawCode = NormalizeCpt(row.CptCode);
-                var (code, viaXwalk) = ResolveCode(row.CptCode, crosswalk);
+                var (code, viaXwalk, xwalkId) = ResolveCode(row.CptCode, siteCode, crosswalk);
                 if (viaXwalk)
                 {
-                    appliedCrosswalkRawCodes.Add(rawCode);
+                    if (xwalkId is long id) appliedCrosswalkIds.Add(id);
                     viaCrosswalkCpts.Add(code);
                 }
                 unitsByCpt[code] = unitsByCpt.GetValueOrDefault(code) + row.Units;
@@ -2175,23 +2247,29 @@ public sealed class BillingRepository : IBillingRepository
             .ThenBy(a => a.CptCode, StringComparer.Ordinal)
             .ToList();
 
-        return (aggregated, notes, appliedCrosswalkRawCodes);
+        return (aggregated, notes, appliedCrosswalkIds);
     }
 
     private static string NormalizeCpt(string code) =>
         code.Trim().ToUpperInvariant();
 
-    // Translate a raw Novarad service_code into the CPT the matcher should
-    // credit, consulting the approved crosswalk. Returns (resolvedCode, viaCrosswalk)
-    // so the caller can suppress noisy RvuMismatch flags (Novarad's local RVU vs.
-    // the mapped CPT's master RVU is a meaningless comparison).
-    private static (string ResolvedCode, bool ViaCrosswalk) ResolveCode(
-        string rawNovaradCode, IReadOnlyDictionary<string, string> crosswalk)
+    // Translate a raw Novarad service_code into the CPT the matcher should credit,
+    // consulting the site-aware crosswalk. A site-specific row (any status) wins over
+    // the tenant-wide default at that site; only when no site row exists do we fall
+    // back to the tenant-wide row. An approved row credits its CPT; a suppressed row
+    // blocks the credit (passthrough). Returns (resolvedCode, viaCrosswalk, crosswalkId)
+    // — crosswalkId is the row that fired (for telemetry), and viaCrosswalk lets the
+    // caller suppress noisy RvuMismatch flags (Novarad's local RVU vs. the mapped CPT's
+    // master RVU is a meaningless comparison).
+    private static (string ResolvedCode, bool ViaCrosswalk, long? CrosswalkId) ResolveCode(
+        string rawNovaradCode, string? siteCode, CrosswalkIndex crosswalk)
     {
         var code = NormalizeCpt(rawNovaradCode);
-        if (crosswalk.TryGetValue(code, out var target))
-            return (NormalizeCpt(target), true);
-        return (code, false);
+        if (siteCode is not null && crosswalk.BySite.TryGetValue((siteCode, code), out var sE))
+            return sE.Status == 1 ? (sE.CptCode, true, sE.CrosswalkId) : (code, false, null);
+        if (crosswalk.TenantWide.TryGetValue(code, out var tE))
+            return tE.Status == 1 ? (tE.CptCode, true, tE.CrosswalkId) : (code, false, null);
+        return (code, false, null);
     }
 
     // Heuristic: does this look like a real CPT/HCPCS code (vs an internal/

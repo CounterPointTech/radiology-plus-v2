@@ -5,17 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
+import { NavDropdown, NavLink } from "@/components/nav-dropdown";
 import { StatusBanner } from "@/components/status-banner";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
-import {
-  canAccessAdmin,
-  canAccessBilling,
-  canManageTemplates,
-  isNrs,
-  roleLabel,
-} from "@/lib/types";
+import { canAccessAdmin, canAccessBilling, isNrs, roleLabel } from "@/lib/types";
 
 export default function TechLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -55,55 +50,25 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
               </span>
             </Link>
             <nav className="hidden md:flex items-center gap-1 text-sm">
-              <Link
-                href="/validation"
-                className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-              >
-                Validation
-              </Link>
+              <NavLink href="/validation" label="Validation" />
               {canAccessBilling(user.role) ? (
-                <>
-                  <Link
-                    href="/billing/cpt-master"
-                    className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                  >
-                    CPT master
-                  </Link>
-                  <Link
-                    href="/billing/rvu"
-                    className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                  >
-                    RVU values
-                  </Link>
-                  <Link
-                    href="/billing/reconciliation"
-                    className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                  >
-                    Reconciliation
-                  </Link>
-                  <Link
-                    href="/billing/unmapped"
-                    className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                  >
-                    Unmapped codes
-                  </Link>
-                </>
-              ) : null}
-              {canManageTemplates(user.role) ? (
-                <Link
-                  href="/templates"
-                  className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                >
-                  Reason templates
-                </Link>
+                <NavDropdown
+                  label="Billing"
+                  items={[
+                    { href: "/billing/rvu", label: "CPT & RVU" },
+                    { href: "/billing/reconciliation", label: "Reconciliation" },
+                    { href: "/billing/unmapped", label: "Unmapped codes" },
+                  ]}
+                />
               ) : null}
               {canAccessAdmin(user.role) ? (
-                <Link
-                  href="/admin/status-banner"
-                  className="px-3 py-1.5 rounded-md text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-base-fg)] hover:bg-[color:var(--color-surface-2)]"
-                >
-                  Status banner
-                </Link>
+                <NavDropdown
+                  label="Admin"
+                  items={[
+                    { href: "/admin/status-banner", label: "Status banner" },
+                    { href: "/templates", label: "Reason templates" },
+                  ]}
+                />
               ) : null}
             </nav>
           </div>
