@@ -87,6 +87,27 @@ public sealed class NovaradReportsReader : INovaradReportsReader
         return result;
     }
 
+    public async Task<IReadOnlyList<string>> ReadAllSiteCodesAsync(
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _novarad.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // Every site the customer actually books orders at (the ~166), the universe the
+        // crosswalk facility-scoping picker offers. shared.sites also exists but carries
+        // configured-but-unused sites; ris.orders is the billing-relevant set.
+        cmd.CommandText = """
+            SELECT DISTINCT site_code
+            FROM ris.orders
+            WHERE site_code IS NOT NULL AND TRIM(site_code) <> ''
+            ORDER BY site_code
+            """;
+        var result = new List<string>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(reader.GetString(0));
+        return result;
+    }
+
     public async Task<IReadOnlyList<SignedProcedureLineItem>> ReadSignedProcedureLineItemsAsync(
         DateTimeOffset windowStart,
         DateTimeOffset windowEnd,

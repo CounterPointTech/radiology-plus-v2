@@ -196,6 +196,7 @@ export const billingApi = {
     return res.data;
   },
 
+  // Returns both tenant-wide (siteCode null) and site-specific overrides for the year.
   listRvuOverrides(params?: { year?: number }) {
     return get<RvuOverride[]>("/billing/rvu/overrides", params);
   },
@@ -208,10 +209,17 @@ export const billingApi = {
     return res.data;
   },
 
-  async deleteRvuOverride(code: string, year: number) {
+  // siteCode null/omitted targets the tenant-wide override; a value targets that site's.
+  async deleteRvuOverride(code: string, year: number, siteCode?: string | null) {
     await apiClient.delete(`/billing/rvu/overrides/${encodeURIComponent(code)}`, {
-      params: { year },
+      params: siteCode ? { year, siteCode } : { year },
     });
+  },
+
+  /** Every distinct Novarad site_code the customer books orders at (~166) — the facility
+   *  universe for the crosswalk facility-scoping picker and the per-site RVU override picker. */
+  listSites() {
+    return get<string[]>("/billing/sites");
   },
 
   /** CPT master joined to CMS truth for the management view's "CMS check" surface. */

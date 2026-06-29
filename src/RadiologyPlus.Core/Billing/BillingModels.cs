@@ -12,12 +12,13 @@ public sealed record CptCode(
     DateTimeOffset CreatedAt,
     DateTimeOffset UpdatedAt);
 
-/// <summary>Per-tenant, optionally per-facility RVU override.</summary>
+/// <summary>Per-tenant RVU override, optionally scoped to a single Novarad site.</summary>
 public sealed record RvuOverride(
     long OverrideId,
     short Year,
     string Code,
-    long? FacilityId,                 // NULL = tenant-wide override
+    long? FacilityId,                 // vestigial (always NULL); superseded by SiteCode
+    string? SiteCode,                 // NULL = tenant-wide override; set = site-specific (raw Novarad site_code)
     decimal OverrideWorkRvu,
     string? Note,
     Guid? CreatedByUserId,
@@ -105,17 +106,19 @@ public sealed record RvuImport(
     DateTimeOffset RanAt);
 
 /// <summary>
-/// Write-shape for upserting a tenant-wide manual RVU override (the top layer of the
+/// Write-shape for upserting a manual RVU override (the top layer of the
 /// rvu_overrides → rvu_values → cpt_codes precedence). <c>Code</c> may be a single
 /// HCPCS or a <c>;</c>-delimited bundle string — both resolve in the reconciliation
-/// overlay. Facility-specific overrides aren't surfaced yet (reconciliation aggregates
-/// per site), so every override created here is tenant-wide (facility_id NULL).
+/// overlay. <c>SiteCode</c> NULL = tenant-wide override; a raw Novarad site_code =
+/// site-specific (it wins over the tenant-wide override at that site during
+/// reconciliation: site &gt; tenant &gt; CMS &gt; master).
 /// </summary>
 public sealed record RvuOverrideUpsert(
     short Year,
     string Code,
     decimal OverrideWorkRvu,
-    string? Note);
+    string? Note,
+    string? SiteCode = null);
 
 /// <summary>Result of <c>UpsertRvuOverrideAsync</c>: the persisted row + whether it was an insert.</summary>
 public sealed record RvuOverrideUpsertResult(RvuOverride Override, bool Inserted);

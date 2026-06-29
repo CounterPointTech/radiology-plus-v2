@@ -377,12 +377,11 @@ public sealed class BillingRepository : IBillingRepository
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = $"""
             SELECT override_id, year, cpt_code, facility_id, override_work_rvu, note,
-                   created_by_user_id, created_at, updated_at
+                   created_by_user_id, created_at, updated_at, site_code
             FROM billing.rvu_overrides
             WHERE tenant_id = @t
               {(year is null ? "" : "AND year = @year")}
-              AND facility_id IS NULL
-            ORDER BY year DESC, cpt_code
+            ORDER BY year DESC, cpt_code, site_code NULLS FIRST
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         if (year is not null) cmd.Parameters.AddWithValue("year", year.Value);
@@ -411,27 +410,39 @@ public sealed class BillingRepository : IBillingRepository
         if (upsert.OverrideWorkRvu < 0)
             throw new ArgumentOutOfRangeException(nameof(upsert), upsert.OverrideWorkRvu, "override_work_rvu must be non-negative.");
 
+        // NULL site = tenant-wide override; a value = site-specific. Store the site_code
+        // byte-identical to the raw Novarad value the matcher keys on (do NOT Trim — the
+        // reconciliation lookup uses the untrimmed ris.orders.site_code, and the crosswalk
+        // does the same; trimming here would silently desync a whitespace-bearing site).
+        var site = string.IsNullOrWhiteSpace(upsert.SiteCode) ? null : upsert.SiteCode;
+
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
-        // Conflict target is the partial unique index uq_rvu_override_tenant_year_cpt_all
-        // (tenant_id, year, cpt_code) WHERE facility_id IS NULL. (xmax = 0) distinguishes
-        // an insert from an update for the audit action. created_by_user_id is set once.
-        cmd.CommandText = """
+        // One ON CONFLICT can name only one index, so pick the conflict target at runtime by
+        // site scope (mirrors UpsertCrosswalkAsync's two-path): the tenant-wide partial
+        // (site_code IS NULL) or the site-specific partial (site_code IS NOT NULL).
+        // (xmax = 0) distinguishes an insert from an update for the audit action.
+        // created_by_user_id is set once.
+        var conflictTarget = site is null
+            ? "(tenant_id, year, cpt_code) WHERE site_code IS NULL"
+            : "(tenant_id, year, cpt_code, site_code) WHERE site_code IS NOT NULL";
+        cmd.CommandText = $"""
             INSERT INTO billing.rvu_overrides
-                (tenant_id, year, cpt_code, facility_id, override_work_rvu, note, created_by_user_id)
-            VALUES (@t, @year, @code, NULL, @work, @note, @user)
-            ON CONFLICT (tenant_id, year, cpt_code) WHERE facility_id IS NULL
+                (tenant_id, year, cpt_code, site_code, override_work_rvu, note, created_by_user_id)
+            VALUES (@t, @year, @code, @site, @work, @note, @user)
+            ON CONFLICT {conflictTarget}
             DO UPDATE SET override_work_rvu = EXCLUDED.override_work_rvu,
                           -- Preserve an existing note when the caller omits one (the inline
                           -- RVU edit sends no note); only overwrite when a note is supplied.
                           note              = COALESCE(EXCLUDED.note, billing.rvu_overrides.note),
                           updated_at        = NOW()
             RETURNING override_id, year, cpt_code, facility_id, override_work_rvu, note,
-                      created_by_user_id, created_at, updated_at, (xmax = 0) AS inserted
+                      created_by_user_id, created_at, updated_at, site_code, (xmax = 0) AS inserted
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("year", upsert.Year);
         cmd.Parameters.AddWithValue("code", code);
+        cmd.Parameters.Add(new NpgsqlParameter("site", NpgsqlDbType.Text) { Value = (object?)site ?? DBNull.Value });
         cmd.Parameters.Add(new NpgsqlParameter("work", NpgsqlDbType.Numeric) { Value = upsert.OverrideWorkRvu });
         cmd.Parameters.AddWithValue("note", (object?)upsert.Note ?? DBNull.Value);
         cmd.Parameters.AddWithValue("user", userId);
@@ -440,12 +451,12 @@ public sealed class BillingRepository : IBillingRepository
         if (!await rdr.ReadAsync(cancellationToken))
             throw new InvalidOperationException("rvu_overrides upsert returned no row.");
         var row = ReadOverride(rdr);
-        var inserted = rdr.GetBoolean(9);
+        var inserted = rdr.GetBoolean(10);
         return new RvuOverrideUpsertResult(row, inserted);
     }
 
     public async Task<bool> DeleteRvuOverrideAsync(
-        Guid tenantId, short year, string code, CancellationToken cancellationToken = default)
+        Guid tenantId, short year, string code, string? siteCode, CancellationToken cancellationToken = default)
     {
         // Canonicalize the same way Upsert stores it, so a delete targets the stored row even
         // when the caller passes a different bundle component order/case.
@@ -453,15 +464,21 @@ public sealed class BillingRepository : IBillingRepository
         var normalized = raw.Contains(';')
             ? NormalizeCptSetKey(raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
             : NormalizeCpt(raw);
+        // NULL site = the tenant-wide override; a value = that site's override. IS NOT
+        // DISTINCT FROM matches NULL=NULL and value=value in one predicate. Don't Trim —
+        // stay byte-identical to the stored (untrimmed) site_code so delete targets it.
+        var site = string.IsNullOrWhiteSpace(siteCode) ? null : siteCode;
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             DELETE FROM billing.rvu_overrides
-            WHERE tenant_id = @t AND year = @year AND cpt_code = @code AND facility_id IS NULL
+            WHERE tenant_id = @t AND year = @year AND cpt_code = @code
+              AND site_code IS NOT DISTINCT FROM @site
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("year", year);
         cmd.Parameters.AddWithValue("code", normalized);
+        cmd.Parameters.Add(new NpgsqlParameter("site", NpgsqlDbType.Text) { Value = (object?)site ?? DBNull.Value });
         var affected = await cmd.ExecuteNonQueryAsync(cancellationToken);
         return affected > 0;
     }
@@ -524,7 +541,7 @@ public sealed class BillingRepository : IBillingRepository
             cmd.CommandText = """
                 SELECT cpt_code, override_work_rvu
                 FROM billing.rvu_overrides
-                WHERE tenant_id = @t AND year = @year AND facility_id IS NULL
+                WHERE tenant_id = @t AND year = @year AND site_code IS NULL
                 """;
             cmd.Parameters.AddWithValue("t", tenantId);
             cmd.Parameters.AddWithValue("year", year);
@@ -626,7 +643,8 @@ public sealed class BillingRepository : IBillingRepository
         Note:            rdr.IsDBNull(5) ? null : rdr.GetString(5),
         CreatedByUserId: rdr.IsDBNull(6) ? null : rdr.GetGuid(6),
         CreatedAt:       new DateTimeOffset(rdr.GetDateTime(7), TimeSpan.Zero),
-        UpdatedAt:       new DateTimeOffset(rdr.GetDateTime(8), TimeSpan.Zero));
+        UpdatedAt:       new DateTimeOffset(rdr.GetDateTime(8), TimeSpan.Zero),
+        SiteCode:        rdr.IsDBNull(9) ? null : rdr.GetString(9));
 
     public async Task<IReadOnlyList<CptCode>> ListCptCodesAsync(
         Guid tenantId, short year, string? search, int limit, CancellationToken cancellationToken = default)
@@ -890,9 +908,14 @@ public sealed class BillingRepository : IBillingRepository
         //     these before bundle/singleton lookup so mapped codes start crediting.
         var crosswalk = await LoadCrosswalkAsync(conn, tx, tenantId, cancellationToken);
 
+        // 2c. Load site-specific RVU overrides, keyed (year, site_code, canonical code).
+        //     Kept OUT of the master index (they vary by site); the matcher consults them
+        //     at emission so a site override wins over the tenant-wide value at that site.
+        var siteOverrides = await LoadSiteRvuOverridesAsync(conn, tx, tenantId, yearsNeeded, cancellationToken);
+
         // 3. Run the matcher in memory — pure CPU, no DB.
         var (aggregated, notes, appliedCrosswalkIds) =
-            MatchAndAggregate(source, master, crosswalk, facilityBySite);
+            MatchAndAggregate(source, master, crosswalk, facilityBySite, siteOverrides);
 
         // 4. Compute run-level rollups from the aggregated line items.
         int totalReports = aggregated.SelectMany(a => a.ReportIds).Distinct().Count();
@@ -1934,9 +1957,10 @@ public sealed class BillingRepository : IBillingRepository
             }
         }
 
-        // Top layer: tenant-wide manual RVU overrides win over CMS + cpt_codes. (Facility-
-        // specific overrides aren't resolved here yet — reconciliation aggregates per site,
-        // so per-facility override resolution is a later refinement.)
+        // Top layer of the master index: tenant-wide manual RVU overrides (site_code IS NULL)
+        // win over CMS + cpt_codes. Site-specific overrides are deliberately NOT baked in here
+        // — they vary by site, so the matcher consults them per emission (site > tenant), see
+        // LoadSiteRvuOverridesAsync + MatchAndAggregate.
         await using (var ov = conn.CreateCommand())
         {
             ov.Transaction = tx;
@@ -1945,7 +1969,7 @@ public sealed class BillingRepository : IBillingRepository
                 FROM billing.rvu_overrides
                 WHERE tenant_id = @t
                   AND year = ANY(@years)
-                  AND facility_id IS NULL
+                  AND site_code IS NULL
                 """;
             ov.Parameters.AddWithValue("t", tenantId);
             ov.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
@@ -2027,6 +2051,40 @@ public sealed class BillingRepository : IBillingRepository
         return new CrosswalkIndex(bySite, tenantWide);
     }
 
+    // Site-specific RVU overrides for the matcher, keyed (year, site_code, canonical code):
+    // set-key for a bundle, NormalizeCpt for a single — the SAME spelling the emission path
+    // looks up. Tenant-wide overrides (site_code IS NULL) are excluded; those are already
+    // baked into the master index by LoadMasterForYearsAsync.
+    private static async Task<Dictionary<(short Year, string SiteCode, string Code), decimal>>
+        LoadSiteRvuOverridesAsync(
+            NpgsqlConnection conn, NpgsqlTransaction tx, Guid tenantId, short[] years, CancellationToken ct)
+    {
+        var map = new Dictionary<(short, string, string), decimal>();
+        await using var cmd = conn.CreateCommand();
+        cmd.Transaction = tx;
+        cmd.CommandText = """
+            SELECT year, site_code, cpt_code, override_work_rvu
+            FROM billing.rvu_overrides
+            WHERE tenant_id = @t
+              AND year = ANY(@years)
+              AND site_code IS NOT NULL
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.Add(new NpgsqlParameter("years", NpgsqlDbType.Array | NpgsqlDbType.Smallint) { Value = years });
+        await using var rdr = await cmd.ExecuteReaderAsync(ct);
+        while (await rdr.ReadAsync(ct))
+        {
+            var y = rdr.GetInt16(0);
+            var site = rdr.GetString(1);
+            var raw = rdr.GetString(2);
+            var code = raw.Contains(';')
+                ? NormalizeCptSetKey(raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+                : NormalizeCpt(raw);
+            map[(y, site, code)] = rdr.GetDecimal(3);
+        }
+        return map;
+    }
+
     private static async Task<Dictionary<string, long>> LoadFacilityMapAsync(
         NpgsqlConnection conn, NpgsqlTransaction tx, Guid tenantId, CancellationToken ct)
     {
@@ -2063,7 +2121,8 @@ public sealed class BillingRepository : IBillingRepository
         IReadOnlyList<SignedProcedureLineItem> source,
         MasterIndex master,
         CrosswalkIndex crosswalk,
-        Dictionary<string, long> facilityBySite)
+        Dictionary<string, long> facilityBySite,
+        Dictionary<(short Year, string SiteCode, string Code), decimal> siteOverrides)
     {
         var notes = new List<ReconciliationNote>();
         var emissions = new List<CreditEmission>();
@@ -2124,6 +2183,11 @@ public sealed class BillingRepository : IBillingRepository
             // CPTs (bundles are always multi-CPT joined by ';').
             if (distinctCpts.Length >= 2 && master.Bundles.TryGetValue((year, setKey), out var bundleRow))
             {
+                // Site override (site > tenant > CMS > master) wins over the bundle's
+                // master-index RVU at this site; else credit the master-index value.
+                var bundleRvu = !string.IsNullOrEmpty(siteCode)
+                    && siteOverrides.TryGetValue((year, siteCode, setKey), out var bsov)
+                        ? bsov : bundleRow.WorkRvu;
                 emissions.Add(new CreditEmission(
                     NovaradPhysicianId: anyRow.SigningPhysicianId,
                     PhysicianDisplayName: anyRow.PhysicianDisplayName,
@@ -2131,7 +2195,7 @@ public sealed class BillingRepository : IBillingRepository
                     CptCode: bundleRow.Code,            // keep the bundle string verbatim
                     CptDescription: bundleRow.Description,
                     Units: 1m,
-                    WorkRvuPerUnit: bundleRow.WorkRvu,
+                    WorkRvuPerUnit: bundleRvu,
                     NovaradRvuWork: null,               // bundles aren't in Novarad's table
                     RvuMismatch: false,
                     ReportId: anyRow.ReportId));
@@ -2157,10 +2221,16 @@ public sealed class BillingRepository : IBillingRepository
                     var units = unitsByCpt[code];
                     var novaradRvu = novaradRvuByCpt[code];
                     var viaXwalk = viaCrosswalkCpts.Contains(code);
-                    // Comparing Novarad's local-code RVU against the resolved CPT's
-                    // master RVU is meaningless when the credit came via crosswalk —
-                    // the customer's code never claimed to be this CPT in the first place.
-                    var mismatch = !viaXwalk && novaradRvu is not null && novaradRvu.Value != singletonRow.WorkRvu;
+                    // Site override (site > tenant > CMS > master) wins over the master-index
+                    // RVU at this site; else credit the master-index value (which already has
+                    // any tenant-wide override baked in).
+                    var rvuPerUnit = !string.IsNullOrEmpty(siteCode)
+                        && siteOverrides.TryGetValue((year, siteCode, code), out var sov)
+                            ? sov : singletonRow.WorkRvu;
+                    // Comparing Novarad's local-code RVU against the resolved CPT's credited
+                    // RVU is meaningless when the credit came via crosswalk — the customer's
+                    // code never claimed to be this CPT in the first place.
+                    var mismatch = !viaXwalk && novaradRvu is not null && novaradRvu.Value != rvuPerUnit;
                     emissions.Add(new CreditEmission(
                         NovaradPhysicianId: anyRow.SigningPhysicianId,
                         PhysicianDisplayName: anyRow.PhysicianDisplayName,
@@ -2168,7 +2238,7 @@ public sealed class BillingRepository : IBillingRepository
                         CptCode: singletonRow.Code,
                         CptDescription: singletonRow.Description,
                         Units: units,
-                        WorkRvuPerUnit: singletonRow.WorkRvu,
+                        WorkRvuPerUnit: rvuPerUnit,
                         NovaradRvuWork: novaradRvu,
                         RvuMismatch: mismatch,
                         ReportId: anyRow.ReportId));

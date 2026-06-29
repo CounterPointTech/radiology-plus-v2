@@ -68,8 +68,9 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// List the tenant-wide manual RVU overrides (facility_id IS NULL), optionally scoped
-    /// to a year. Read-only; backs the RVU management view's override list.
+    /// List the manual RVU overrides (both tenant-wide and site-specific), optionally
+    /// scoped to a year. Each row carries its <c>SiteCode</c> (NULL = tenant-wide).
+    /// Read-only; backs the RVU management view's override list + per-site expansion.
     /// </summary>
     Task<IReadOnlyList<RvuOverride>> ListRvuOverridesAsync(
         Guid tenantId,
@@ -77,10 +78,13 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Insert-or-update a tenant-wide manual RVU override for (year, code). Returns the
-    /// persisted row + whether it was an insert, so the caller can emit Create vs Update
-    /// audit. Conflict target is the partial unique index on
-    /// (tenant_id, year, cpt_code) WHERE facility_id IS NULL.
+    /// Insert-or-update a manual RVU override for (year, code, site). When
+    /// <see cref="RvuOverrideUpsert.SiteCode"/> is NULL the override is tenant-wide;
+    /// otherwise it is scoped to that Novarad site_code. Returns the persisted row +
+    /// whether it was an insert, so the caller can emit Create vs Update audit. The
+    /// conflict target is chosen at runtime by site scope (partial unique on
+    /// (tenant_id, year, cpt_code) WHERE site_code IS NULL, or
+    /// (tenant_id, year, cpt_code, site_code) WHERE site_code IS NOT NULL).
     /// </summary>
     Task<RvuOverrideUpsertResult> UpsertRvuOverrideAsync(
         Guid tenantId,
@@ -89,13 +93,15 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Delete the tenant-wide manual RVU override for (year, code). Returns false when no
-    /// such override existed (so the caller can 404).
+    /// Delete the manual RVU override for (year, code, site). <paramref name="siteCode"/>
+    /// NULL targets the tenant-wide override; a value targets that site's override.
+    /// Returns false when no such override existed (so the caller can 404).
     /// </summary>
     Task<bool> DeleteRvuOverrideAsync(
         Guid tenantId,
         short year,
         string code,
+        string? siteCode,
         CancellationToken cancellationToken = default);
 
     /// <summary>

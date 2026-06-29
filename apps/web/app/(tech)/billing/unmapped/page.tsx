@@ -677,6 +677,9 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
   // Scope chooser (create mode only): tenant-wide default vs a chosen set of sites.
   const [scope, setScope] = useState<"tenant" | "facilities">("tenant");
   const [selectedSites, setSelectedSites] = useState<Set<string>>(new Set());
+  // "Show all sites" reveals the full Novarad site list so a code can be mapped at a
+  // site it hasn't appeared at yet (proactive). Fetched lazily, only when needed.
+  const [showAllSites, setShowAllSites] = useState(false);
 
   // Search field drives the suggester. Pre-filled with the Novarad description
   // when available; the user can clear and type their own search (most unmapped
@@ -704,6 +707,18 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
     staleTime: 60_000,
   });
 
+  // The full set of Novarad sites for the "show all sites" expander. Lazy: only fetched
+  // once the user is scoping to facilities AND has asked for the full list (or the code
+  // has no appearing sites to scope to). The site list is stable, so cache it broadly.
+  const wantsAllSites =
+    scope === "facilities" && (showAllSites || (target?.facilities.length ?? 0) === 0);
+  const allSites = useQuery({
+    queryKey: ["billing-sites"],
+    queryFn: () => billingApi.listSites(),
+    enabled: target !== null && wantsAllSites,
+    staleTime: 5 * 60_000,
+  });
+
   function reset() {
     setManualCpt("");
     setNote("");
@@ -711,6 +726,16 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
     setFormError(null);
     setScope("tenant");
     setSelectedSites(new Set());
+    setShowAllSites(false);
+  }
+
+  function toggleSite(siteCode: string, checked: boolean) {
+    setSelectedSites((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(siteCode);
+      else next.delete(siteCode);
+      return next;
+    });
   }
 
   const saveMutation = useMutation({
@@ -788,8 +813,11 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
   const suppressed = sug?.suppressed ?? false;
   const candidates = sug?.candidates ?? [];
   const existing = sug?.existing ?? null;
-  // Every site the code appears at is targetable by its raw site_code.
+  // Sites the code appears at (shown first, with report counts); the rest of the
+  // tenant's sites are revealed on demand via "show all sites" for proactive mapping.
   const selectableSites = target.facilities;
+  const appearingSet = new Set(selectableSites.map((f) => f.siteCode));
+  const otherSites = (allSites.data ?? []).filter((s) => !appearingSet.has(s));
   const canSave =
     !suppressed &&
     Boolean(picked?.cptCode || manualCpt.trim()) &&
@@ -816,7 +844,7 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
           </div>
         ) : null}
 
-        {existing && !suppressed && !isEdit ? (
+        {existing && !suppressed && !isEdit && scope === "tenant" ? (
           <div className="rounded-md border border-[color:var(--color-accent)]/40 bg-[color:var(--color-accent)]/10 px-3 py-2 text-xs">
             Already mapped to <span className="font-mono font-medium">{existing.cptCode}</span>.
             Saving will overwrite (audited).
@@ -921,8 +949,7 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
             <Label>Apply to</Label>
             <div className="flex items-center gap-1">
               {(["tenant", "facilities"] as const).map((s) => {
-                const disabled =
-                  suppressed || (s === "facilities" && selectableSites.length === 0);
+                const disabled = suppressed;
                 return (
                   <button
                     key={s}
@@ -941,38 +968,88 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
               })}
             </div>
             {scope === "facilities" ? (
-              selectableSites.length === 0 ? (
-                <p className="text-[11px] text-[color:var(--color-muted-fg)]">
-                  This code has no sites to scope to — it can only be mapped tenant-wide.
-                </p>
-              ) : (
-                <div className="rounded-md border border-[color:var(--color-border)] p-2 space-y-1 max-h-40 overflow-y-auto">
-                  {selectableSites.map((f) => (
-                    <label
-                      key={f.siteCode}
-                      className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selectedSites.has(f.siteCode)}
-                        onChange={(e) =>
-                          setSelectedSites((prev) => {
-                            const next = new Set(prev);
-                            if (e.target.checked) next.add(f.siteCode);
-                            else next.delete(f.siteCode);
-                            return next;
-                          })
-                        }
-                        className="accent-[color:var(--color-accent)]"
-                      />
-                      <span className="font-mono text-xs">{f.siteCode}</span>
-                      <span className="text-[11px] text-[color:var(--color-muted-fg)]">
-                        · {f.reportCount} report{f.reportCount === 1 ? "" : "s"}
-                      </span>
-                    </label>
-                  ))}
-                </div>
-              )
+              <div className="rounded-md border border-[color:var(--color-border)] p-2 space-y-1 max-h-56 overflow-y-auto">
+                {selectableSites.length > 0 ? (
+                  <>
+                    <p className="px-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+                      Sites where this code appears
+                    </p>
+                    {selectableSites.map((f) => (
+                      <label
+                        key={f.siteCode}
+                        className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedSites.has(f.siteCode)}
+                          onChange={(e) => toggleSite(f.siteCode, e.target.checked)}
+                          className="accent-[color:var(--color-accent)]"
+                        />
+                        <span className="font-mono text-xs">{f.siteCode}</span>
+                        <span className="text-[11px] text-[color:var(--color-muted-fg)]">
+                          · {f.reportCount} report{f.reportCount === 1 ? "" : "s"}
+                        </span>
+                      </label>
+                    ))}
+                  </>
+                ) : (
+                  <p className="px-1 text-[11px] text-[color:var(--color-muted-fg)]">
+                    This code hasn&apos;t appeared at any site in this window. Pick from all
+                    sites below.
+                  </p>
+                )}
+
+                {showAllSites || selectableSites.length === 0 ? (
+                  <div className="mt-1 space-y-1 border-t border-[color:var(--color-border)] pt-1">
+                    <p className="px-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+                      {selectableSites.length > 0 ? "All other sites" : "All sites"}
+                    </p>
+                    {allSites.isLoading ? (
+                      <div className="flex justify-center py-3">
+                        <Spinner size={16} />
+                      </div>
+                    ) : allSites.isError ? (
+                      <p className="px-1 text-[11px] text-[color:var(--color-novarad-red)]">
+                        Couldn&apos;t load the site list.{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2"
+                          onClick={() => allSites.refetch()}
+                        >
+                          Try again
+                        </button>
+                      </p>
+                    ) : otherSites.length === 0 ? (
+                      <p className="px-1 text-[11px] text-[color:var(--color-muted-fg)]">
+                        No other sites.
+                      </p>
+                    ) : (
+                      otherSites.map((s) => (
+                        <label
+                          key={s}
+                          className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedSites.has(s)}
+                            onChange={(e) => toggleSite(s, e.target.checked)}
+                            className="accent-[color:var(--color-accent)]"
+                          />
+                          <span className="font-mono text-xs">{s}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSites(true)}
+                    className="px-1 pt-1 text-xs text-[color:var(--color-accent)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/50 rounded"
+                  >
+                    Show all sites
+                  </button>
+                )}
+              </div>
             ) : (
               <p className="text-[11px] text-[color:var(--color-muted-fg)]">
                 One mapping used by every facility, unless a site-specific mapping overrides it.

@@ -56,6 +56,7 @@ public static class BillingEndpoints
         group.MapPost("/crosswalk", CreateCrosswalkAsync).WithName("BillingCrosswalkCreate");
         group.MapPut("/crosswalk/{serviceCode}", UpdateCrosswalkAsync).WithName("BillingCrosswalkUpdate");
         group.MapPost("/crosswalk/bulk", BulkImportCrosswalkAsync).WithName("BillingCrosswalkBulkImport");
+        group.MapGet("/sites", ListSitesAsync).WithName("BillingListSites");
 
         return app;
     }
@@ -491,14 +492,17 @@ public static class BillingEndpoints
         // INSERT doesn't throw a numeric overflow mid-request.
         if (req.OverrideWorkRvu > 9999.9999m)
             return Results.BadRequest(new { error = "overrideWorkRvu exceeds the numeric(8,4) maximum (9999.9999)." });
+        if (req.SiteCode is not null && string.IsNullOrWhiteSpace(req.SiteCode))
+            return Results.BadRequest(new { error = "siteCode must be a non-empty site, or omitted for tenant-wide." });
 
-        var upsert = new RvuOverrideUpsert(req.Year, code, req.OverrideWorkRvu, req.Note);
+        var upsert = new RvuOverrideUpsert(req.Year, code, req.OverrideWorkRvu, req.Note, req.SiteCode);
         var result = await repo.UpsertRvuOverrideAsync(user.TenantId, user.UserId, upsert, ct);
 
+        var scope = result.Override.SiteCode is null ? "tenant-wide" : $"site {result.Override.SiteCode}";
         await audit.WriteSuccessAsync(
             user.TenantId, user, result.Inserted ? AccessAction.Create : AccessAction.Update,
             $"billing.rvu_overrides {result.Override.Year}/{result.Override.Code} " +
-                $"= {result.Override.OverrideWorkRvu} work RVU (tenant-wide)",
+                $"= {result.Override.OverrideWorkRvu} work RVU ({scope})",
             http, ct);
 
         return Results.Ok(result.Override);
@@ -512,23 +516,40 @@ public static class BillingEndpoints
         IAccessAuditWriter audit,
         HttpContext http,
         [FromQuery] short? year,
+        [FromQuery] string? siteCode,
         CancellationToken ct)
     {
         var user = currentUser.Require();
         if (!user.Role.CanAccessBilling()) return Results.Forbid();
         if (year is null)
             return Results.BadRequest(new { error = "year query parameter is required." });
+        if (siteCode is not null && string.IsNullOrWhiteSpace(siteCode))
+            return Results.BadRequest(new { error = "siteCode must be a non-empty site, or omitted for tenant-wide." });
 
-        var removed = await repo.DeleteRvuOverrideAsync(user.TenantId, year.Value, code, ct);
+        var removed = await repo.DeleteRvuOverrideAsync(user.TenantId, year.Value, code, siteCode, ct);
+        var scope = siteCode is null ? "tenant-wide" : $"site {siteCode}";
         if (!removed)
-            return Results.NotFound(new { error = $"No tenant-wide override for {year}/{code}." });
+            return Results.NotFound(new { error = $"No {scope} override for {year}/{code}." });
 
         await audit.WriteSuccessAsync(
             user.TenantId, user, AccessAction.Delete,
-            $"billing.rvu_overrides {year}/{code} removed (tenant-wide)",
+            $"billing.rvu_overrides {year}/{code} removed ({scope})",
             http, ct);
 
         return Results.NoContent();
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListSitesAsync(
+        ICurrentUser currentUser,
+        INovaradReportsReader reader,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var sites = await reader.ReadAllSiteCodesAsync(ct);
+        return Results.Ok(sites);
     }
 
     [Authorize]
@@ -772,7 +793,8 @@ public sealed record PatchCptCodeRequest(
 public sealed record RvuOverrideRequest(
     short Year,
     decimal OverrideWorkRvu,
-    string? Note);
+    string? Note,
+    string? SiteCode = null);                           // null = tenant-wide; set = site-specific
 
 public sealed record RunReconciliationRequest(
     DateTimeOffset From,
