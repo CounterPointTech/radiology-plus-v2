@@ -348,9 +348,9 @@ export default function UnmappedCodesPage() {
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search descriptions…"
+                placeholder="Search code or description…"
                 className="pl-9 w-64"
-                aria-label="Search unmapped codes by description"
+                aria-label="Search unmapped codes by code or description"
               />
             </div>
             <select
