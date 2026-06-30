@@ -4,9 +4,10 @@ using RadiologyPlus.Core.Billing;
 namespace RadiologyPlus.Data.Billing;
 
 /// <summary>
-/// Default <see cref="IRvuWriteBackSink"/>. Logs and returns 0 — the real M*Modal
-/// SQL Server write lands here once the dictation DBs are installed (see the
-/// <c>TODO(MModal-rvu-writeback)</c> marker on the interface). Mirrors
+/// Hard-off <see cref="IRvuWriteBackSink"/>: always reports not-configured and writes
+/// nothing. The real sink (<see cref="MModalRvuWriteBackSink"/>) already self-gates on a
+/// per-tenant <c>tenancy.mmodal_connections</c> row, so this exists only as an explicit
+/// "write-back fully disabled" registration (e.g. for tests) — mirrors
 /// <see cref="RadiologyPlus.Data.TechValidation.NoOpFfiComparisonSink"/>.
 /// </summary>
 public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
@@ -15,20 +16,32 @@ public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
 
     public NoOpRvuWriteBackSink(ILogger<NoOpRvuWriteBackSink> logger) => _logger = logger;
 
-    public Task<int> PushWorkRvusAsync(
-        Guid tenantId,
-        short year,
-        char quarter,
-        IReadOnlyList<RvuWriteBackEntry> entries,
+    public Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
+        => Task.FromResult(false);
+
+    public Task<RvuSyncPreview> PreviewAsync(
+        Guid tenantId, short year, char quarter,
+        IReadOnlyList<RvuWriteBackEntry> desired, CancellationToken cancellationToken = default)
+    {
+        _logger.LogInformation(
+            "NoOpRvuWriteBackSink: write-back disabled — would preview {Count} code(s) for {Year}{Quarter}.",
+            desired?.Count ?? 0, year, quarter);
+        return Task.FromResult(new RvuSyncPreview(
+            Configured: false, year, quarter, Total: 0, Updatable: 0, Unchanged: 0, Missing: 0,
+            Diffs: Array.Empty<RvuSyncDiff>()));
+    }
+
+    public Task<RvuSyncResult> ApplyAsync(
+        Guid tenantId, short year, char quarter,
+        IReadOnlyList<RvuWriteBackEntry> desired, Guid userId, string username,
         CancellationToken cancellationToken = default)
     {
-        // TODO(MModal-rvu-writeback): once the dictation DBs are installed, UPDATE
-        // [Exam].[ExamCode] SET [RelativeValueUnit] = @work WHERE [Code] = @hcpcs
-        // against the M*Modal SQL Server. No-op until then so callers can wire the
-        // push without any behavior change.
         _logger.LogInformation(
-            "NoOpRvuWriteBackSink: would push {Count} work-RVU value(s) for {Year}{Quarter} to M*Modal.",
-            entries?.Count ?? 0, year, quarter);
-        return Task.FromResult(0);
+            "NoOpRvuWriteBackSink: write-back disabled — would push {Count} code(s) for {Year}{Quarter}.",
+            desired?.Count ?? 0, year, quarter);
+        return Task.FromResult(new RvuSyncResult(
+            Configured: false, year, quarter, Matched: 0, Updated: 0, Unchanged: 0, Missing: 0,
+            Success: false, Error: "M*Modal write-back is not configured for this tenant.",
+            RanAt: DateTimeOffset.Now));
     }
 }

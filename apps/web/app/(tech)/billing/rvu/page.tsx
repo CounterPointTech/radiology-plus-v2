@@ -17,6 +17,7 @@ import { useRouter } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ImportUploader } from "@/components/billing/import-uploader";
+import { MModalSyncPanel } from "@/components/billing/mmodal-sync-panel";
 import { RvuImportUploader } from "@/components/billing/rvu-import-uploader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -66,7 +67,7 @@ type RvuItem =
   | { kind: "site"; key: string; code: string; ov: RvuOverride }
   | { kind: "addSite"; key: string; code: string };
 
-type Tab = "cms" | "master";
+type Tab = "cms" | "master" | "mmodal";
 
 function useDebounced<T>(value: T, ms = 250): T {
   const [debounced, setDebounced] = useState(value);
@@ -155,12 +156,17 @@ export default function RvuPage() {
         <TabButton active={tab === "cms"} onClick={() => setTab("cms")}>
           CMS values
         </TabButton>
+        <TabButton active={tab === "mmodal"} onClick={() => setTab("mmodal")}>
+          Sync to M*Modal
+        </TabButton>
       </div>
 
       {tab === "master" ? (
         <MasterOverridesTab year={year} />
-      ) : (
+      ) : tab === "cms" ? (
         <CmsValuesTab year={year} imports={imports.data ?? []} />
+      ) : (
+        <MModalSyncPanel year={year} />
       )}
     </div>
   );

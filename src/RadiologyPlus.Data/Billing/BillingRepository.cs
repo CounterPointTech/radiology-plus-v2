@@ -872,6 +872,111 @@ public sealed class BillingRepository : IBillingRepository
     }
 
     // ========================================================================
+    // M*Modal RVU write-back (project-ffi-rvu-writeback)
+    // ========================================================================
+
+    public async Task<IReadOnlyList<RvuWriteBackEntry>> GetEffectiveWorkRvusAsync(
+        Guid tenantId, short year, CancellationToken cancellationToken = default)
+    {
+        // Reuse the exact reconciliation precedence overlay (tenant override -> CMS 'A' &
+        // work>0 -> Amber master) so the figures pushed to M*Modal equal what we credit.
+        // Bundles are excluded: the M*Modal target keys on a single [Code], so only
+        // singletons map. Site-specific overrides do not propagate (the target has no site
+        // dimension) — the master index already carries only tenant-wide overrides.
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+        var master = await LoadMasterForYearsAsync(conn, tx, tenantId, new[] { year }, cancellationToken);
+        await tx.RollbackAsync(cancellationToken);   // read-only; nothing to commit
+
+        return master.Singletons
+            .Where(kv => kv.Key.Year == year)
+            .Select(kv => new RvuWriteBackEntry(kv.Value.Code, kv.Value.WorkRvu))
+            .OrderBy(e => e.Hcpcs, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public async Task<RvuSyncRun> RecordSyncRunAsync(
+        Guid tenantId, Guid runByUserId, short year, char quarter, bool dryRun,
+        int matchedRows, int updatedRows, int unchangedRows, int missingRows,
+        bool success, string? errorMessage, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO billing.rvu_sync_runs
+                (tenant_id, year, quarter, dry_run, matched_rows, updated_rows,
+                 unchanged_rows, missing_rows, success, error_message, ran_by_user_id)
+            VALUES (@t, @year, @quarter, @dry, @matched, @updated,
+                    @unchanged, @missing, @success, @error, @user)
+            RETURNING sync_run_id, ran_at
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("year", year);
+        cmd.Parameters.AddWithValue("quarter", quarter.ToString());
+        cmd.Parameters.AddWithValue("dry", dryRun);
+        cmd.Parameters.AddWithValue("matched", matchedRows);
+        cmd.Parameters.AddWithValue("updated", updatedRows);
+        cmd.Parameters.AddWithValue("unchanged", unchangedRows);
+        cmd.Parameters.AddWithValue("missing", missingRows);
+        cmd.Parameters.AddWithValue("success", success);
+        cmd.Parameters.Add(new NpgsqlParameter("error", NpgsqlDbType.Text) { Value = (object?)errorMessage ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("user", runByUserId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        return new RvuSyncRun(
+            SyncRunId: reader.GetInt64(0),
+            Year: year,
+            Quarter: quarter,
+            DryRun: dryRun,
+            MatchedRows: matchedRows,
+            UpdatedRows: updatedRows,
+            UnchangedRows: unchangedRows,
+            MissingRows: missingRows,
+            Success: success,
+            ErrorMessage: errorMessage,
+            RanByUserId: runByUserId,
+            RanAt: new DateTimeOffset(reader.GetDateTime(1), TimeSpan.Zero));
+    }
+
+    public async Task<IReadOnlyList<RvuSyncRun>> ListRecentSyncRunsAsync(
+        Guid tenantId, int limit, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT sync_run_id, year, quarter, dry_run, matched_rows, updated_rows,
+                   unchanged_rows, missing_rows, success, error_message, ran_by_user_id, ran_at
+            FROM billing.rvu_sync_runs
+            WHERE tenant_id = @t
+            ORDER BY ran_at DESC
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("limit", limit);
+
+        var result = new List<RvuSyncRun>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new RvuSyncRun(
+                SyncRunId: reader.GetInt64(0),
+                Year: reader.GetInt16(1),
+                Quarter: reader.GetString(2)[0],
+                DryRun: reader.GetBoolean(3),
+                MatchedRows: reader.GetInt32(4),
+                UpdatedRows: reader.GetInt32(5),
+                UnchangedRows: reader.GetInt32(6),
+                MissingRows: reader.GetInt32(7),
+                Success: reader.GetBoolean(8),
+                ErrorMessage: reader.IsDBNull(9) ? null : reader.GetString(9),
+                RanByUserId: reader.GetGuid(10),
+                RanAt: new DateTimeOffset(reader.GetDateTime(11), TimeSpan.Zero)));
+        }
+        return result;
+    }
+
+    // ========================================================================
     // Reconciliation
     // ========================================================================
 

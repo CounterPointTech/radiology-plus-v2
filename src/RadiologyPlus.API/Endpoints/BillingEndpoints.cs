@@ -43,6 +43,12 @@ public static class BillingEndpoints
         group.MapPut("/rvu/overrides/{code}", UpsertRvuOverrideAsync).WithName("BillingUpsertRvuOverride");
         group.MapDelete("/rvu/overrides/{code}", DeleteRvuOverrideAsync).WithName("BillingDeleteRvuOverride");
         group.MapGet("/cpt-master/cms-check", CptMasterCmsCheckAsync).WithName("BillingCptMasterCmsCheck");
+
+        // M*Modal RVU write-back (project-ffi-rvu-writeback)
+        group.MapGet("/rvu/sync/status", RvuSyncStatusAsync).WithName("BillingRvuSyncStatus");
+        group.MapGet("/rvu/sync/runs", ListRvuSyncRunsAsync).WithName("BillingRvuSyncRuns");
+        group.MapPost("/rvu/sync/preview", PreviewRvuSyncAsync).WithName("BillingRvuSyncPreview");
+        group.MapPost("/rvu/sync", ApplyRvuSyncAsync).WithName("BillingRvuSyncApply");
         group.MapGet("/reconciliation/preview", PreviewReconciliationAsync).WithName("BillingReconciliationPreview");
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
@@ -453,6 +459,100 @@ public static class BillingEndpoints
         var rows = await repo.ListRecentRvuImportsAsync(
             user.TenantId, Math.Clamp(limit ?? 25, 1, 200), ct);
         return Results.Ok(rows);
+    }
+
+    // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────
+
+    [Authorize]
+    private static async Task<IResult> RvuSyncStatusAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var configured = await sink.IsConfiguredAsync(user.TenantId, ct);
+        var lastRuns = await repo.ListRecentSyncRunsAsync(user.TenantId, 1, ct);
+        return Results.Ok(new { configured, lastRun = lastRuns.Count > 0 ? lastRuns[0] : null });
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListRvuSyncRunsAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var rows = await repo.ListRecentSyncRunsAsync(
+            user.TenantId, Math.Clamp(limit ?? 10, 1, 100), ct);
+        return Results.Ok(rows);
+    }
+
+    [Authorize]
+    private static async Task<IResult> PreviewRvuSyncAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var resolvedYear = year ?? (short)DateTime.Now.Year;
+        var q = ResolveQuarter(quarter, out var qErr);
+        if (qErr is not null) return Results.BadRequest(new { error = qErr });
+
+        var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
+        var preview = await sink.PreviewAsync(user.TenantId, resolvedYear, q, desired, ct);
+        return Results.Ok(preview);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ApplyRvuSyncAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var resolvedYear = year ?? (short)DateTime.Now.Year;
+        var q = ResolveQuarter(quarter, out var qErr);
+        if (qErr is not null) return Results.BadRequest(new { error = qErr });
+
+        var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
+        var result = await sink.ApplyAsync(user.TenantId, resolvedYear, q, desired, user.UserId, user.Username, ct);
+
+        if (!result.Configured)
+            return Results.BadRequest(new { error = "M*Modal write-back is not configured for this tenant." });
+
+        // Persist an audited run header for the (configured) attempt — success or failure.
+        await repo.RecordSyncRunAsync(
+            user.TenantId, user.UserId, resolvedYear, q, dryRun: false,
+            result.Matched, result.Updated, result.Unchanged, result.Missing,
+            result.Success, result.Error, ct);
+
+        return Results.Ok(result);
+    }
+
+    // A/B/C/D quarter parse shared by the sync handlers; defaults to 'A'.
+    private static char ResolveQuarter(string? quarter, out string? error)
+    {
+        error = null;
+        var q = string.IsNullOrWhiteSpace(quarter) ? 'A' : char.ToUpperInvariant(quarter.Trim()[0]);
+        if (q is not ('A' or 'B' or 'C' or 'D'))
+            error = "quarter must be one of A, B, C, D (A=Jan, B=Apr, C=Jul, D=Oct).";
+        return q;
     }
 
     [Authorize]

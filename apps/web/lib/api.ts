@@ -25,6 +25,10 @@ import type {
   RvuImport,
   RvuOverride,
   RvuOverrideRequest,
+  RvuSyncPreview,
+  RvuSyncResult,
+  RvuSyncRun,
+  RvuSyncStatus,
   RvuValue,
   StudyMergeOutcome,
   StudyMergeRequest,
@@ -225,6 +229,36 @@ export const billingApi = {
   /** CPT master joined to CMS truth for the management view's "CMS check" surface. */
   cptMasterCmsCheck(params: { year: number; limit?: number }) {
     return get<CptMasterCmsRow[]>("/billing/cpt-master/cms-check", params);
+  },
+
+  // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ────────────────────
+
+  /** Is the M*Modal write-back configured for this tenant + the most recent run. */
+  rvuSyncStatus() {
+    return get<RvuSyncStatus>("/billing/rvu/sync/status");
+  },
+
+  /** Recent M*Modal write-back run history (newest first). */
+  listRvuSyncRuns(limit = 10) {
+    return get<RvuSyncRun[]>("/billing/rvu/sync/runs", { limit });
+  },
+
+  /** Dry run: diff our effective RVUs against what M*Modal stores (no write). */
+  async rvuSyncPreview(year: number, quarter: string) {
+    const res = await apiClient.post<RvuSyncPreview>(
+      "/billing/rvu/sync/preview",
+      null,
+      { params: { year, quarter } },
+    );
+    return res.data;
+  },
+
+  /** Apply the diff: write the changed RVUs into M*Modal (transactional, audited). */
+  async rvuSyncApply(year: number, quarter: string) {
+    const res = await apiClient.post<RvuSyncResult>("/billing/rvu/sync", null, {
+      params: { year, quarter },
+    });
+    return res.data;
   },
 
   runReconciliation(req: RunReconciliationRequest) {

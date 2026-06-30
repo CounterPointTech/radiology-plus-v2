@@ -168,6 +168,62 @@ export interface RvuImport {
   ranAt: string;
 }
 
+// ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────────
+
+// One code's diff vs what M*Modal currently stores. action: "update" (RVU differs —
+// will be written) | "unchanged" (already equal) | "missing" (no active M*Modal row).
+export interface RvuSyncDiff {
+  hcpcs: string;
+  currentRvu: number | null;
+  newRvu: number;
+  matchedRows: number;
+  action: "update" | "unchanged" | "missing";
+}
+
+export interface RvuSyncPreview {
+  configured: boolean;
+  year: number;
+  quarter: RvuQuarter;
+  total: number;
+  updatable: number;
+  unchanged: number;
+  missing: number;
+  diffs: RvuSyncDiff[];
+}
+
+export interface RvuSyncResult {
+  configured: boolean;
+  year: number;
+  quarter: RvuQuarter;
+  matched: number;
+  updated: number;
+  unchanged: number;
+  missing: number;
+  success: boolean;
+  error: string | null;
+  ranAt: string;
+}
+
+export interface RvuSyncRun {
+  syncRunId: number;
+  year: number;
+  quarter: RvuQuarter;
+  dryRun: boolean;
+  matchedRows: number;
+  updatedRows: number;
+  unchangedRows: number;
+  missingRows: number;
+  success: boolean;
+  errorMessage: string | null;
+  ranByUserId: string;
+  ranAt: string;
+}
+
+export interface RvuSyncStatus {
+  configured: boolean;
+  lastRun: RvuSyncRun | null;
+}
+
 export interface RvuOverride {
   overrideId: number;
   year: number;
