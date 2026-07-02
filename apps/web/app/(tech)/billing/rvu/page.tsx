@@ -65,7 +65,7 @@ function canonCode(code: string): string {
 type RvuItem =
   | { kind: "code"; key: string; row: CptMasterCmsRow }
   | { kind: "site"; key: string; code: string; ov: RvuOverride }
-  | { kind: "addSite"; key: string; code: string };
+  | { kind: "addSite"; key: string; code: string; effectiveRvu: number };
 
 type Tab = "cms" | "master" | "mmodal";
 
@@ -548,7 +548,12 @@ function MasterOverridesTab({ year }: { year: number }) {
         const sos = siteOverridesByCode.get(canonCode(r.code)) ?? [];
         for (const ov of sos)
           out.push({ kind: "site", key: `${r.code}::${ov.siteCode}`, code: r.code, ov });
-        out.push({ kind: "addSite", key: `${r.code}::__add`, code: r.code });
+        out.push({
+          kind: "addSite",
+          key: `${r.code}::__add`,
+          code: r.code,
+          effectiveRvu: r.effectiveWorkRvu,
+        });
       }
     }
     return out;
@@ -788,6 +793,7 @@ function MasterOverridesTab({ year }: { year: number }) {
                     ) : (
                       <AddSiteRow
                         code={item.code}
+                        effectiveRvu={item.effectiveRvu}
                         existingSites={
                           (siteOverridesByCode.get(canonCode(item.code)) ?? [])
                             .map((o) => o.siteCode)
@@ -1079,15 +1085,20 @@ const SiteOverrideRow = memo(function SiteOverrideRow({
   );
 });
 
-// The "add a site override" row under an expanded code. Offers only the sites where
-// the code is actually billed (latest reconciliation run), minus any already overridden.
+// The "add a site override" row under an expanded code. Lists ALL of the tenant's Novarad
+// sites (facilities), minus any already overridden — not gated on reconciliation activity.
+// When the code has no site overrides yet, it also shows an empty-state hint so the
+// (otherwise bare) expansion reads as intentional rather than as missing data.
 function AddSiteRow({
   code,
+  effectiveRvu,
   existingSites,
   pendingSiteCode,
   onSave,
 }: {
   code: string;
+  // The tenant-wide effective RVU that already applies at every site (shown in the hint).
+  effectiveRvu: number;
   existingSites: string[];
   // The site whose site-override save is in flight for this code, or null. Busy only
   // when it's a NEW site (an edit of an existing site row shouldn't spin this control).
@@ -1115,10 +1126,21 @@ function AddSiteRow({
     setVal("");
   }
 
+  const noSites = existingSites.length === 0;
   return (
-    <div className="flex flex-wrap items-center gap-2 border-t border-[color:var(--color-border)]/50 bg-[color:var(--color-surface-2)]/30 py-2 pl-12 pr-4 text-sm">
-      <Plus className="size-3.5 text-[color:var(--color-muted-fg)]" />
-      {sites.isLoading ? (
+    <div className="border-t border-[color:var(--color-border)]/50 bg-[color:var(--color-surface-2)]/30 pl-12 pr-4 text-sm">
+      {noSites ? (
+        <p className="pt-2 text-xs text-[color:var(--color-muted-fg)]">
+          No site-specific overrides — this code uses its tenant-wide RVU{" "}
+          <span className="font-mono tabular-nums text-[color:var(--color-base-fg)]">
+            {fmt(effectiveRvu)}
+          </span>{" "}
+          at every site. Add one below to give a single site a different value.
+        </p>
+      ) : null}
+      <div className="flex flex-wrap items-center gap-2 py-2">
+        <Plus className="size-3.5 text-[color:var(--color-muted-fg)]" />
+        {sites.isLoading ? (
         <span className="inline-flex items-center gap-2 text-[color:var(--color-muted-fg)]">
           <Spinner size={12} /> Loading sites…
         </span>
@@ -1171,6 +1193,7 @@ function AddSiteRow({
           </Button>
         </>
       )}
+      </div>
     </div>
   );
 }
