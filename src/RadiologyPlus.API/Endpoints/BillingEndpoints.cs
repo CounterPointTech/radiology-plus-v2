@@ -46,6 +46,7 @@ public static class BillingEndpoints
 
         // M*Modal RVU write-back (project-ffi-rvu-writeback)
         group.MapGet("/rvu/sync/status", RvuSyncStatusAsync).WithName("BillingRvuSyncStatus");
+        group.MapGet("/rvu/sync/issuers", ListRvuSyncIssuersAsync).WithName("BillingRvuSyncIssuers");
         group.MapGet("/rvu/sync/runs", ListRvuSyncRunsAsync).WithName("BillingRvuSyncRuns");
         group.MapPost("/rvu/sync/preview", PreviewRvuSyncAsync).WithName("BillingRvuSyncPreview");
         group.MapPost("/rvu/sync", ApplyRvuSyncAsync).WithName("BillingRvuSyncApply");
@@ -479,6 +480,19 @@ public static class BillingEndpoints
     }
 
     [Authorize]
+    private static async Task<IResult> ListRvuSyncIssuersAsync(
+        ICurrentUser currentUser,
+        IRvuWriteBackSink sink,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var issuers = await sink.ListIssuersAsync(user.TenantId, ct);
+        return Results.Ok(issuers);
+    }
+
+    [Authorize]
     private static async Task<IResult> ListRvuSyncRunsAsync(
         ICurrentUser currentUser,
         IBillingRepository repo,
@@ -500,6 +514,8 @@ public static class BillingEndpoints
         IRvuWriteBackSink sink,
         [FromQuery] short? year,
         [FromQuery] string? quarter,
+        [FromQuery] string? issuerKey,
+        [FromQuery] bool? allIssuers,
         CancellationToken ct)
     {
         var user = currentUser.Require();
@@ -508,9 +524,11 @@ public static class BillingEndpoints
         var resolvedYear = year ?? (short)DateTime.Now.Year;
         var q = ResolveQuarter(quarter, out var qErr);
         if (qErr is not null) return Results.BadRequest(new { error = qErr });
+        if (!TryResolveIssuerScope(issuerKey, allIssuers, out var scope, out var scopeErr))
+            return Results.BadRequest(new { error = scopeErr });
 
         var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
-        var preview = await sink.PreviewAsync(user.TenantId, resolvedYear, q, desired, ct);
+        var preview = await sink.PreviewAsync(user.TenantId, resolvedYear, q, scope, desired, ct);
         return Results.Ok(preview);
     }
 
@@ -521,6 +539,8 @@ public static class BillingEndpoints
         IRvuWriteBackSink sink,
         [FromQuery] short? year,
         [FromQuery] string? quarter,
+        [FromQuery] string? issuerKey,
+        [FromQuery] bool? allIssuers,
         CancellationToken ct)
     {
         var user = currentUser.Require();
@@ -529,16 +549,18 @@ public static class BillingEndpoints
         var resolvedYear = year ?? (short)DateTime.Now.Year;
         var q = ResolveQuarter(quarter, out var qErr);
         if (qErr is not null) return Results.BadRequest(new { error = qErr });
+        if (!TryResolveIssuerScope(issuerKey, allIssuers, out var scope, out var scopeErr))
+            return Results.BadRequest(new { error = scopeErr });
 
         var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
-        var result = await sink.ApplyAsync(user.TenantId, resolvedYear, q, desired, user.UserId, user.Username, ct);
+        var result = await sink.ApplyAsync(user.TenantId, resolvedYear, q, scope, desired, user.UserId, user.Username, ct);
 
         if (!result.Configured)
             return Results.BadRequest(new { error = "M*Modal write-back is not configured for this tenant." });
 
         // Persist an audited run header for the (configured) attempt — success or failure.
         await repo.RecordSyncRunAsync(
-            user.TenantId, user.UserId, resolvedYear, q, dryRun: false,
+            user.TenantId, user.UserId, resolvedYear, q, scope, dryRun: false,
             result.Matched, result.Updated, result.Unchanged, result.Missing,
             result.Success, result.Error, ct);
 
@@ -553,6 +575,36 @@ public static class BillingEndpoints
         if (q is not ('A' or 'B' or 'C' or 'D'))
             error = "quarter must be one of A, B, C, D (A=Jan, B=Apr, C=Jul, D=Oct).";
         return q;
+    }
+
+    // Resolve the M*Modal issuer scope: exactly one of a specific issuerKey (one facility) or
+    // allIssuers=true (every facility — the warned power option). Neither is rejected so a
+    // caller can never accidentally hit all facilities by omitting the scope.
+    private static bool TryResolveIssuerScope(string? issuerKey, bool? allIssuers, out Guid? scope, out string? error)
+    {
+        scope = null;
+        error = null;
+        var all = allIssuers == true;
+        var hasKey = !string.IsNullOrWhiteSpace(issuerKey);
+
+        if (all && hasKey)
+        {
+            error = "Pass either issuerKey (one facility) or allIssuers=true, not both.";
+            return false;
+        }
+        if (all) return true;                 // scope stays null = all issuers
+        if (!hasKey)
+        {
+            error = "Specify issuerKey (one facility) or allIssuers=true.";
+            return false;
+        }
+        if (!Guid.TryParse(issuerKey, out var key))
+        {
+            error = "issuerKey must be a GUID.";
+            return false;
+        }
+        scope = key;
+        return true;
     }
 
     [Authorize]

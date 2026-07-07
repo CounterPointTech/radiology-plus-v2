@@ -896,7 +896,7 @@ public sealed class BillingRepository : IBillingRepository
     }
 
     public async Task<RvuSyncRun> RecordSyncRunAsync(
-        Guid tenantId, Guid runByUserId, short year, char quarter, bool dryRun,
+        Guid tenantId, Guid runByUserId, short year, char quarter, Guid? issuerKey, bool dryRun,
         int matchedRows, int updatedRows, int unchangedRows, int missingRows,
         bool success, string? errorMessage, CancellationToken cancellationToken = default)
     {
@@ -904,15 +904,16 @@ public sealed class BillingRepository : IBillingRepository
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO billing.rvu_sync_runs
-                (tenant_id, year, quarter, dry_run, matched_rows, updated_rows,
+                (tenant_id, year, quarter, issuer_key, dry_run, matched_rows, updated_rows,
                  unchanged_rows, missing_rows, success, error_message, ran_by_user_id)
-            VALUES (@t, @year, @quarter, @dry, @matched, @updated,
+            VALUES (@t, @year, @quarter, @issuer, @dry, @matched, @updated,
                     @unchanged, @missing, @success, @error, @user)
             RETURNING sync_run_id, ran_at
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("year", year);
         cmd.Parameters.AddWithValue("quarter", quarter.ToString());
+        cmd.Parameters.Add(new NpgsqlParameter("issuer", NpgsqlDbType.Uuid) { Value = (object?)issuerKey ?? DBNull.Value });
         cmd.Parameters.AddWithValue("dry", dryRun);
         cmd.Parameters.AddWithValue("matched", matchedRows);
         cmd.Parameters.AddWithValue("updated", updatedRows);
@@ -928,6 +929,7 @@ public sealed class BillingRepository : IBillingRepository
             SyncRunId: reader.GetInt64(0),
             Year: year,
             Quarter: quarter,
+            IssuerKey: issuerKey,
             DryRun: dryRun,
             MatchedRows: matchedRows,
             UpdatedRows: updatedRows,
@@ -945,7 +947,7 @@ public sealed class BillingRepository : IBillingRepository
         await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT sync_run_id, year, quarter, dry_run, matched_rows, updated_rows,
+            SELECT sync_run_id, year, quarter, issuer_key, dry_run, matched_rows, updated_rows,
                    unchanged_rows, missing_rows, success, error_message, ran_by_user_id, ran_at
             FROM billing.rvu_sync_runs
             WHERE tenant_id = @t
@@ -963,15 +965,16 @@ public sealed class BillingRepository : IBillingRepository
                 SyncRunId: reader.GetInt64(0),
                 Year: reader.GetInt16(1),
                 Quarter: reader.GetString(2)[0],
-                DryRun: reader.GetBoolean(3),
-                MatchedRows: reader.GetInt32(4),
-                UpdatedRows: reader.GetInt32(5),
-                UnchangedRows: reader.GetInt32(6),
-                MissingRows: reader.GetInt32(7),
-                Success: reader.GetBoolean(8),
-                ErrorMessage: reader.IsDBNull(9) ? null : reader.GetString(9),
-                RanByUserId: reader.GetGuid(10),
-                RanAt: new DateTimeOffset(reader.GetDateTime(11), TimeSpan.Zero)));
+                IssuerKey: reader.IsDBNull(3) ? null : reader.GetGuid(3),
+                DryRun: reader.GetBoolean(4),
+                MatchedRows: reader.GetInt32(5),
+                UpdatedRows: reader.GetInt32(6),
+                UnchangedRows: reader.GetInt32(7),
+                MissingRows: reader.GetInt32(8),
+                Success: reader.GetBoolean(9),
+                ErrorMessage: reader.IsDBNull(10) ? null : reader.GetString(10),
+                RanByUserId: reader.GetGuid(11),
+                RanAt: new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero)));
         }
         return result;
     }

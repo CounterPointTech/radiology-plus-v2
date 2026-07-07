@@ -115,6 +115,7 @@ public sealed record RvuSyncRun(
     long SyncRunId,
     short Year,
     char Quarter,
+    Guid? IssuerKey,          // M*Modal issuer this run targeted; null = all issuers
     bool DryRun,
     int MatchedRows,
     int UpdatedRows,

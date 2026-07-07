@@ -22,6 +22,7 @@ import type {
   ReconciliationLineDetailResponse,
   ReconciliationRun,
   RunReconciliationRequest,
+  MModalIssuer,
   RvuImport,
   RvuOverride,
   RvuOverrideRequest,
@@ -238,25 +239,39 @@ export const billingApi = {
     return get<RvuSyncStatus>("/billing/rvu/sync/status");
   },
 
+  /** The M*Modal issuers (facilities) with active exam codes — the sync-target picker. */
+  listSyncIssuers() {
+    return get<MModalIssuer[]>("/billing/rvu/sync/issuers");
+  },
+
   /** Recent M*Modal write-back run history (newest first). */
   listRvuSyncRuns(limit = 10) {
     return get<RvuSyncRun[]>("/billing/rvu/sync/runs", { limit });
   },
 
-  /** Dry run: diff our effective RVUs against what M*Modal stores (no write). */
-  async rvuSyncPreview(year: number, quarter: string) {
-    const res = await apiClient.post<RvuSyncPreview>(
-      "/billing/rvu/sync/preview",
-      null,
-      { params: { year, quarter } },
-    );
+  /**
+   * Dry run: diff our effective RVUs against what M*Modal stores (no write). Scope is
+   * exactly one facility ({ issuerKey }) or every facility ({ allIssuers: true }).
+   */
+  async rvuSyncPreview(
+    year: number,
+    quarter: string,
+    scope: { issuerKey?: string; allIssuers?: boolean },
+  ) {
+    const res = await apiClient.post<RvuSyncPreview>("/billing/rvu/sync/preview", null, {
+      params: { year, quarter, issuerKey: scope.issuerKey, allIssuers: scope.allIssuers },
+    });
     return res.data;
   },
 
   /** Apply the diff: write the changed RVUs into M*Modal (transactional, audited). */
-  async rvuSyncApply(year: number, quarter: string) {
+  async rvuSyncApply(
+    year: number,
+    quarter: string,
+    scope: { issuerKey?: string; allIssuers?: boolean },
+  ) {
     const res = await apiClient.post<RvuSyncResult>("/billing/rvu/sync", null, {
-      params: { year, quarter },
+      params: { year, quarter, issuerKey: scope.issuerKey, allIssuers: scope.allIssuers },
     });
     return res.data;
   },

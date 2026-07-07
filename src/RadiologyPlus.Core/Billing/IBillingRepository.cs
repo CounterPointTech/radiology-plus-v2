@@ -59,6 +59,7 @@ public interface IBillingRepository
         Guid runByUserId,
         short year,
         char quarter,
+        Guid? issuerKey,
         bool dryRun,
         int matchedRows,
         int updatedRows,

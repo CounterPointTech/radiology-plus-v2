@@ -24,13 +24,22 @@ public interface IRvuWriteBackSink
     Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// List the M*Modal issuers (facilities) that have active exam codes, so the operator can
+    /// choose which one to sync. The connection's pinned issuer is flagged <see cref="MModalIssuer.IsDefault"/>.
+    /// Empty when the write-back isn't configured.
+    /// </summary>
+    Task<IReadOnlyList<MModalIssuer>> ListIssuersAsync(Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Dry run: read what M*Modal currently stores for the supplied effective figures and
     /// return the per-code diff (current vs new) without writing anything.
+    /// <paramref name="issuerKey"/> scopes to one facility; <c>null</c> = ALL issuers.
     /// </summary>
     Task<RvuSyncPreview> PreviewAsync(
         Guid tenantId,
         short year,
         char quarter,
+        Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired,
         CancellationToken cancellationToken = default);
 
@@ -38,16 +47,30 @@ public interface IRvuWriteBackSink
     /// Apply the diff: transactionally UPDATE only the codes whose RVU changed, then write
     /// a dual-audit row to <c>audit.access_logs</c>. Returns the run result (matched /
     /// updated / unchanged / missing counts). Rolls back the M*Modal write on any failure.
+    /// <paramref name="issuerKey"/> scopes to one facility; <c>null</c> = ALL issuers.
     /// </summary>
     Task<RvuSyncResult> ApplyAsync(
         Guid tenantId,
         short year,
         char quarter,
+        Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired,
         Guid userId,
         string username,
         CancellationToken cancellationToken = default);
 }
+
+/// <summary>
+/// One M*Modal issuer (facility) that owns exam codes. <see cref="ActiveCodeCount"/> is its
+/// active (non-deleted) <c>[Exam].[ExamCode]</c> rows; <see cref="IsDefault"/> marks the
+/// connection's pinned issuer (the UI preselects it).
+/// </summary>
+public sealed record MModalIssuer(
+    Guid IssuerKey,
+    string Name,
+    string? Description,
+    int ActiveCodeCount,
+    bool IsDefault);
 
 /// <summary>One (HCPCS → work RVU) figure bound for the dictation system.</summary>
 public sealed record RvuWriteBackEntry(string Hcpcs, decimal WorkRvu);

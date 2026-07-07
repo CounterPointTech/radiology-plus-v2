@@ -170,6 +170,16 @@ export interface RvuImport {
 
 // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────────
 
+// One M*Modal issuer (facility) that owns exam codes. isDefault marks the connection's
+// pinned issuer (the UI preselects it).
+export interface MModalIssuer {
+  issuerKey: string;
+  name: string;
+  description: string | null;
+  activeCodeCount: number;
+  isDefault: boolean;
+}
+
 // One code's diff vs what M*Modal currently stores. action: "update" (RVU differs —
 // will be written) | "unchanged" (already equal) | "missing" (no active M*Modal row).
 export interface RvuSyncDiff {
@@ -208,6 +218,7 @@ export interface RvuSyncRun {
   syncRunId: number;
   year: number;
   quarter: RvuQuarter;
+  issuerKey: string | null; // null = all issuers
   dryRun: boolean;
   matchedRows: number;
   updatedRows: number;

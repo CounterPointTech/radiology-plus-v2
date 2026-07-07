@@ -19,8 +19,11 @@ public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
     public Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
         => Task.FromResult(false);
 
+    public Task<IReadOnlyList<MModalIssuer>> ListIssuersAsync(Guid tenantId, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<MModalIssuer>>(Array.Empty<MModalIssuer>());
+
     public Task<RvuSyncPreview> PreviewAsync(
-        Guid tenantId, short year, char quarter,
+        Guid tenantId, short year, char quarter, Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired, CancellationToken cancellationToken = default)
     {
         _logger.LogInformation(
@@ -32,7 +35,7 @@ public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
     }
 
     public Task<RvuSyncResult> ApplyAsync(
-        Guid tenantId, short year, char quarter,
+        Guid tenantId, short year, char quarter, Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired, Guid userId, string username,
         CancellationToken cancellationToken = default)
     {

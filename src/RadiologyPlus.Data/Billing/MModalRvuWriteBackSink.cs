@@ -49,7 +49,7 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
         => await LoadConnectionAsync(tenantId, cancellationToken) is not null;
 
     public async Task<RvuSyncPreview> PreviewAsync(
-        Guid tenantId, short year, char quarter,
+        Guid tenantId, short year, char quarter, Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired, CancellationToken cancellationToken = default)
     {
         var conn = await LoadConnectionAsync(tenantId, cancellationToken);
@@ -58,7 +58,7 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
 
         await using var sql = new SqlConnection(conn.ConnectionString);
         await sql.OpenAsync(cancellationToken);
-        var diffs = await ComputeDiffsAsync(sql, conn.IssuerKey, desired, cancellationToken);
+        var diffs = await ComputeDiffsAsync(sql, issuerKey, desired, cancellationToken);
 
         return new RvuSyncPreview(
             Configured: true, year, quarter,
@@ -70,7 +70,7 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
     }
 
     public async Task<RvuSyncResult> ApplyAsync(
-        Guid tenantId, short year, char quarter,
+        Guid tenantId, short year, char quarter, Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired, Guid userId, string username,
         CancellationToken cancellationToken = default)
     {
@@ -82,7 +82,7 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
         await using var sql = new SqlConnection(conn.ConnectionString);
         await sql.OpenAsync(cancellationToken);
 
-        var diffs = await ComputeDiffsAsync(sql, conn.IssuerKey, desired, cancellationToken);
+        var diffs = await ComputeDiffsAsync(sql, issuerKey, desired, cancellationToken);
         var toUpdate = diffs.Where(d => d.Action == "update").ToList();
         int matched = diffs.Count(d => d.Action != "missing");
         int unchanged = diffs.Count(d => d.Action == "unchanged");
@@ -94,7 +94,9 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
             await using var tx = (SqlTransaction)await sql.BeginTransactionAsync(cancellationToken);
             try
             {
-                var updateSql = conn.IssuerKey is null
+                // Scope the write to one issuer (targeted) or, when issuerKey is null, every
+                // active row for the code across ALL issuers (the warned power option).
+                var updateSql = issuerKey is null
                     ? "UPDATE [Exam].[ExamCode] SET [RelativeValueUnit] = @work, [ModifiedDateTime] = SYSUTCDATETIME() WHERE [Code] = @code AND [IsDeleted] IS NULL"
                     : "UPDATE [Exam].[ExamCode] SET [RelativeValueUnit] = @work, [ModifiedDateTime] = SYSUTCDATETIME() WHERE [Code] = @code AND [IsDeleted] IS NULL AND [IssuerKey] = @issuer";
 
@@ -106,7 +108,7 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
                     cmd.CommandTimeout = 120;
                     cmd.Parameters.Add(new SqlParameter("@work", SqlDbType.Float) { Value = (double)d.NewRvu });
                     cmd.Parameters.Add(new SqlParameter("@code", SqlDbType.NVarChar, 50) { Value = d.Hcpcs });
-                    if (conn.IssuerKey is Guid ik)
+                    if (issuerKey is Guid ik)
                         cmd.Parameters.Add(new SqlParameter("@issuer", SqlDbType.UniqueIdentifier) { Value = ik });
 
                     var rows = await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -119,17 +121,53 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
             {
                 await tx.RollbackAsync(cancellationToken);
                 _logger.LogError(ex,
-                    "M*Modal RVU write-back failed for tenant {Tenant} {Year}{Quarter}; rolled back.",
-                    tenantId, year, quarter);
-                await WriteAuditAsync(tenantId, userId, username, year, quarter,
+                    "M*Modal RVU write-back failed for tenant {Tenant} {Year}{Quarter} (issuer {Issuer}); rolled back.",
+                    tenantId, year, quarter, issuerKey?.ToString() ?? "ALL");
+                await WriteAuditAsync(tenantId, userId, username, year, quarter, issuerKey,
                     success: false, matched, updated: 0, unchanged, missing, toUpdate, ex.Message, cancellationToken);
                 return new RvuSyncResult(true, year, quarter, matched, 0, unchanged, missing, false, ex.Message, DateTimeOffset.Now);
             }
         }
 
-        await WriteAuditAsync(tenantId, userId, username, year, quarter,
+        await WriteAuditAsync(tenantId, userId, username, year, quarter, issuerKey,
             success: true, matched, updatedCodes, unchanged, missing, toUpdate, null, cancellationToken);
         return new RvuSyncResult(true, year, quarter, matched, updatedCodes, unchanged, missing, true, null, DateTimeOffset.Now);
+    }
+
+    public async Task<IReadOnlyList<MModalIssuer>> ListIssuersAsync(
+        Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        var conn = await LoadConnectionAsync(tenantId, cancellationToken);
+        if (conn is null) return Array.Empty<MModalIssuer>();
+
+        await using var sql = new SqlConnection(conn.ConnectionString);
+        await sql.OpenAsync(cancellationToken);
+        await using var cmd = sql.CreateCommand();
+        cmd.CommandTimeout = 120;
+        // Only issuers with at least one active exam code — the rest can't be a sync target.
+        cmd.CommandText = """
+            SELECT i.[IssuerKey], i.[Name], i.[Description], COUNT(ec.[ExamCodeId]) AS active_codes
+            FROM [Clinical].[Issuer] i
+            JOIN [Exam].[ExamCode] ec
+              ON ec.[IssuerKey] = i.[IssuerKey] AND ec.[IsDeleted] IS NULL
+            GROUP BY i.[IssuerKey], i.[Name], i.[Description]
+            HAVING COUNT(ec.[ExamCodeId]) > 0
+            ORDER BY COUNT(ec.[ExamCodeId]) DESC
+            """;
+
+        var result = new List<MModalIssuer>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var key = reader.GetGuid(0);
+            result.Add(new MModalIssuer(
+                IssuerKey: key,
+                Name: reader.IsDBNull(1) ? key.ToString() : reader.GetString(1),
+                Description: reader.IsDBNull(2) ? null : reader.GetString(2),
+                ActiveCodeCount: reader.GetInt32(3),
+                IsDefault: conn.IssuerKey is Guid def && def == key));
+        }
+        return result;
     }
 
     // ── Diff: read the active M*Modal rows once, aggregate per Code, classify each desired
@@ -207,19 +245,21 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
     // ── Dual audit: write our append-only audit.access_logs row (the M*Modal write itself
     //    already committed/rolled back). before/after live in metadata.changes.
     private async Task WriteAuditAsync(
-        Guid tenantId, Guid userId, string username, short year, char quarter,
+        Guid tenantId, Guid userId, string username, short year, char quarter, Guid? issuerKey,
         bool success, int matched, int updated, int unchanged, int missing,
         List<RvuSyncDiff> changes, string? error, CancellationToken ct)
     {
         try
         {
+            var scope = issuerKey?.ToString() ?? "ALL issuers";
             var metadata = new
             {
                 description = success
-                    ? $"M*Modal RVU write-back {year}{quarter}: {updated} updated, {unchanged} unchanged, {missing} missing."
-                    : $"M*Modal RVU write-back {year}{quarter} FAILED and was rolled back.",
+                    ? $"M*Modal RVU write-back {year}{quarter} (issuer {scope}): {updated} updated, {unchanged} unchanged, {missing} missing."
+                    : $"M*Modal RVU write-back {year}{quarter} (issuer {scope}) FAILED and was rolled back.",
                 year,
                 quarter = quarter.ToString(),
+                issuerKey,
                 matched,
                 updated,
                 unchanged,

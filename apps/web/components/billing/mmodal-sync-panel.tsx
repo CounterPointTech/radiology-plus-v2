@@ -3,51 +3,75 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AlertTriangle,
   ArrowRight,
   CheckCircle2,
   Database,
   RefreshCw,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { billingApi } from "@/lib/api";
-import type { RvuQuarter, RvuSyncPreview, RvuSyncRun } from "@/lib/types";
+import type { MModalIssuer, RvuQuarter, RvuSyncPreview, RvuSyncRun } from "@/lib/types";
 import { formatDateTime } from "@/lib/utils";
 
 const QUARTERS: RvuQuarter[] = ["A", "B", "C", "D"];
 const QUARTER_ORDINAL: Record<RvuQuarter, string> = { A: "1st", B: "2nd", C: "3rd", D: "4th" };
 const MAX_DIFF_ROWS = 500;
+const ALL = "__all__"; // sentinel scope value = every issuer
 const fmt = (n: number | null | undefined) => (n == null ? "—" : n.toFixed(2));
+const num = (n: number) => n.toLocaleString();
 
 /**
  * "Sync to M*Modal" — pushes the effective work RVUs for a (year, quarter) out to the
- * M*Modal ClinicalDataStore. Diff-only: preview the before→after, then apply only the
- * codes that changed. Self-gates on a configured connection (no write-back surface until
- * one exists). NRS/Admin only (enforced server-side).
+ * M*Modal ClinicalDataStore. The operator picks WHICH issuer (facility) to sync — one at a
+ * time by default, or, deliberately, all of them (with a hard warning). Diff-only: preview
+ * the before→after, then apply only the codes that changed. Self-gates on a configured
+ * connection. NRS/Admin only (enforced server-side).
  */
 export function MModalSyncPanel({ year }: { year: number }) {
   const qc = useQueryClient();
   const [quarter, setQuarter] = useState<RvuQuarter>("A");
+  const [scope, setScope] = useState<string>(""); // "" until issuers load, then an issuerKey or ALL
+  const [confirmAll, setConfirmAll] = useState(false);
   const [preview, setPreview] = useState<RvuSyncPreview | null>(null);
 
   const status = useQuery({
     queryKey: ["mmodal-sync-status"],
     queryFn: () => billingApi.rvuSyncStatus(),
   });
+  const configured = status.data?.configured ?? false;
+
+  const issuers = useQuery({
+    queryKey: ["mmodal-issuers"],
+    queryFn: () => billingApi.listSyncIssuers(),
+    enabled: configured,
+    staleTime: 5 * 60_000,
+  });
   const runs = useQuery({
     queryKey: ["mmodal-sync-runs"],
     queryFn: () => billingApi.listRvuSyncRuns(10),
   });
 
+  // Preselect the connection's default issuer (or the biggest) once the list loads.
+  useEffect(() => {
+    if (scope || !issuers.data || issuers.data.length === 0) return;
+    const def = issuers.data.find((i) => i.isDefault) ?? issuers.data[0];
+    setScope(def.issuerKey);
+  }, [issuers.data, scope]);
+
+  const isAll = scope === ALL;
+  const apiScope = isAll ? { allIssuers: true } : { issuerKey: scope };
+
   const previewMut = useMutation({
-    mutationFn: () => billingApi.rvuSyncPreview(year, quarter),
+    mutationFn: () => billingApi.rvuSyncPreview(year, quarter, apiScope),
     onSuccess: (p) => setPreview(p),
   });
   const applyMut = useMutation({
-    mutationFn: () => billingApi.rvuSyncApply(year, quarter),
+    mutationFn: () => billingApi.rvuSyncApply(year, quarter, apiScope),
     onSuccess: () => {
       setPreview(null);
       qc.invalidateQueries({ queryKey: ["mmodal-sync-status"] });
@@ -55,13 +79,21 @@ export function MModalSyncPanel({ year }: { year: number }) {
     },
   });
 
-  // A previously-computed diff is stale the moment the snapshot (year/quarter) changes.
+  // A computed diff is stale the moment the snapshot (year/quarter) or target issuer changes.
   useEffect(() => {
     setPreview(null);
+    setConfirmAll(false);
     applyMut.reset();
     previewMut.reset();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [year, quarter]);
+  }, [year, quarter, scope]);
+
+  // issuerKey -> name, for the run-history display.
+  const issuerName = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const i of issuers.data ?? []) m.set(i.issuerKey, i.name);
+    return (key: string | null) => (key == null ? "All issuers" : m.get(key) ?? "one facility");
+  }, [issuers.data]);
 
   if (status.isLoading) {
     return (
@@ -71,7 +103,9 @@ export function MModalSyncPanel({ year }: { year: number }) {
     );
   }
 
-  const configured = status.data?.configured ?? false;
+  const selectedIssuer = issuers.data?.find((i) => i.issuerKey === scope);
+  const canApply =
+    !!preview && preview.updatable > 0 && (!isAll || confirmAll);
 
   return (
     <div className="space-y-6">
@@ -83,8 +117,8 @@ export function MModalSyncPanel({ year }: { year: number }) {
           </h2>
           <p className="text-sm text-[color:var(--color-muted-fg)] mt-1 max-w-2xl">
             Push the effective work RVUs reconciliation credits (override → CMS → master,
-            status-A only) out to the M*Modal dictation system. Preview the changes first;
-            only codes whose RVU actually differs are written.
+            status-A only) out to the M*Modal dictation system. Choose a facility, preview the
+            changes, then apply — only codes whose RVU actually differs are written.
           </p>
         </div>
       </div>
@@ -106,6 +140,17 @@ export function MModalSyncPanel({ year }: { year: number }) {
           <div className="flex flex-wrap items-end gap-3">
             <div className="flex flex-col gap-1">
               <label className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+                Facility (issuer)
+              </label>
+              <IssuerSelect
+                value={scope}
+                onChange={setScope}
+                issuers={issuers.data ?? []}
+                loading={issuers.isLoading}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
                 Snapshot quarter
               </label>
               <select
@@ -124,6 +169,7 @@ export function MModalSyncPanel({ year }: { year: number }) {
             <Button
               variant="secondary"
               loading={previewMut.isPending}
+              disabled={!scope}
               onClick={() => previewMut.mutate()}
             >
               <RefreshCw className="size-4" />
@@ -132,7 +178,7 @@ export function MModalSyncPanel({ year }: { year: number }) {
             <Button
               variant="primary"
               loading={applyMut.isPending}
-              disabled={!preview || preview.updatable === 0}
+              disabled={!canApply}
               onClick={() => applyMut.mutate()}
             >
               <ArrowRight className="size-4" />
@@ -141,6 +187,39 @@ export function MModalSyncPanel({ year }: { year: number }) {
                 : "Apply changes"}
             </Button>
           </div>
+
+          {/* Context line for the selected scope */}
+          {!isAll && selectedIssuer ? (
+            <p className="text-xs text-[color:var(--color-muted-fg)]">
+              Targeting <strong className="text-[color:var(--color-base-fg)]">{selectedIssuer.name}</strong>
+              {selectedIssuer.description ? ` — ${selectedIssuer.description}` : ""} ·{" "}
+              {num(selectedIssuer.activeCodeCount)} active exam codes.
+            </p>
+          ) : null}
+
+          {/* All-issuers hard warning + confirmation */}
+          {isAll ? (
+            <div className="rounded-md border border-[color:var(--color-caution)]/50 bg-[color:var(--color-caution)]/10 px-4 py-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-[color:var(--color-caution)]">
+                <AlertTriangle className="size-4" />
+                This targets every facility ({num((issuers.data ?? []).length)} issuers).
+              </div>
+              <p className="text-sm text-[color:var(--color-muted-fg)] mt-1 ml-6">
+                Applying will overwrite matching RVUs at <strong>all</strong> facilities that
+                share this M*Modal instance — including other customers&apos; exam codes. Preview
+                is safe; only confirm below if you&apos;re certain you want to write to all of them.
+              </p>
+              <label className="mt-2 ml-6 flex items-center gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={confirmAll}
+                  onChange={(e) => setConfirmAll(e.target.checked)}
+                  className="size-4 accent-[color:var(--color-caution)]"
+                />
+                I understand this affects all {num((issuers.data ?? []).length)} facilities.
+              </label>
+            </div>
+          ) : null}
 
           {previewMut.isError ? (
             <p className="text-sm text-[color:var(--color-novarad-red)]">
@@ -177,8 +256,45 @@ export function MModalSyncPanel({ year }: { year: number }) {
         </>
       )}
 
-      <SyncHistory runs={runs.data ?? []} loading={runs.isLoading} />
+      <SyncHistory runs={runs.data ?? []} loading={runs.isLoading} issuerName={issuerName} />
     </div>
+  );
+}
+
+function IssuerSelect({
+  value,
+  onChange,
+  issuers,
+  loading,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  issuers: MModalIssuer[];
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <span className="inline-flex h-10 items-center gap-2 text-sm text-[color:var(--color-muted-fg)]">
+        <Spinner size={14} /> Loading facilities…
+      </span>
+    );
+  }
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      aria-label="Facility (M*Modal issuer) to sync"
+      className="h-10 min-w-64 rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface)] px-3 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/60"
+    >
+      {value === "" ? <option value="">Choose a facility…</option> : null}
+      {issuers.map((i) => (
+        <option key={i.issuerKey} value={i.issuerKey}>
+          {i.name}
+          {i.isDefault ? " (default)" : ""} — {num(i.activeCodeCount)} codes
+        </option>
+      ))}
+      <option value={ALL}>⚠ All issuers — {num(issuers.length)} facilities</option>
+    </select>
   );
 }
 
@@ -249,7 +365,15 @@ function PreviewPanel({ preview }: { preview: RvuSyncPreview }) {
   );
 }
 
-function SyncHistory({ runs, loading }: { runs: RvuSyncRun[]; loading: boolean }) {
+function SyncHistory({
+  runs,
+  loading,
+  issuerName,
+}: {
+  runs: RvuSyncRun[];
+  loading: boolean;
+  issuerName: (key: string | null) => string;
+}) {
   return (
     <div>
       <h3 className="text-sm font-medium text-[color:var(--color-muted-fg)] mb-2">
@@ -270,10 +394,17 @@ function SyncHistory({ runs, loading }: { runs: RvuSyncRun[]; loading: boolean }
                 {r.year}
                 {r.quarter}
               </span>
+              <span
+                className={
+                  r.issuerKey == null
+                    ? "text-[color:var(--color-caution)]"
+                    : "text-[color:var(--color-base-fg)]"
+                }
+              >
+                {issuerName(r.issuerKey)}
+              </span>
               {r.success ? (
-                <Badge variant="success">
-                  {r.updatedRows} updated
-                </Badge>
+                <Badge variant="success">{r.updatedRows} updated</Badge>
               ) : (
                 <Badge variant="danger">failed</Badge>
               )}
