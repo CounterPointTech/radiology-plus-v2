@@ -4,12 +4,18 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   AlertTriangle,
+  Archive,
   ArrowRight,
   CheckCircle2,
   Database,
+  Download,
   RefreshCw,
+  RotateCcw,
+  Save,
+  Trash2,
+  Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -76,6 +82,7 @@ export function MModalSyncPanel({ year }: { year: number }) {
       setPreview(null);
       qc.invalidateQueries({ queryKey: ["mmodal-sync-status"] });
       qc.invalidateQueries({ queryKey: ["mmodal-sync-runs"] });
+      qc.invalidateQueries({ queryKey: ["mmodal-snapshots"] }); // the auto restore-point
     },
   });
 
@@ -253,10 +260,212 @@ export function MModalSyncPanel({ year }: { year: number }) {
           ) : null}
 
           {preview ? <PreviewPanel preview={preview} /> : null}
+
+          <BackupsSection scope={apiScope} scopeReady={!!scope} issuerName={issuerName} />
         </>
       )}
 
       <SyncHistory runs={runs.data ?? []} loading={runs.isLoading} issuerName={issuerName} />
+    </div>
+  );
+}
+
+function BackupsSection({
+  scope,
+  scopeReady,
+  issuerName,
+}: {
+  scope: { issuerKey?: string; allIssuers?: boolean };
+  scopeReady: boolean;
+  issuerName: (key: string | null) => string;
+}) {
+  const qc = useQueryClient();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [confirmRestoreId, setConfirmRestoreId] = useState<number | null>(null);
+  const [restoreMsg, setRestoreMsg] = useState<string | null>(null);
+
+  const snapshots = useQuery({
+    queryKey: ["mmodal-snapshots"],
+    queryFn: () => billingApi.listSnapshots(25),
+  });
+  const invalidate = () => qc.invalidateQueries({ queryKey: ["mmodal-snapshots"] });
+
+  const backupMut = useMutation({
+    mutationFn: () => billingApi.backupNow(scope),
+    onSuccess: invalidate,
+  });
+  const restoreMut = useMutation({
+    mutationFn: (id: number) => billingApi.restoreSnapshot(id),
+    onSuccess: (r) => {
+      setConfirmRestoreId(null);
+      setRestoreMsg(
+        r.success
+          ? `Restored ${r.restored} value${r.restored === 1 ? "" : "s"} (${r.unchanged} already matched${r.missing > 0 ? `, ${r.missing} not found` : ""}).`
+          : `Restore failed and was rolled back: ${r.error ?? "unknown error"}`,
+      );
+      invalidate();
+    },
+  });
+  const deleteMut = useMutation({
+    mutationFn: (id: number) => billingApi.deleteSnapshot(id),
+    onSuccess: invalidate,
+  });
+  const importMut = useMutation({
+    mutationFn: (file: File) => billingApi.importSnapshot(file),
+    onSuccess: invalidate,
+  });
+
+  async function download(id: number) {
+    const { blob, filename } = await billingApi.exportSnapshot(id);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename ?? `mmodal-rvu-backup-${id}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  const rows = snapshots.data ?? [];
+
+  return (
+    <div className="rounded-lg border border-[color:var(--color-border)] bg-[color:var(--color-surface)] p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h3 className="text-sm font-medium flex items-center gap-2">
+            <Archive className="size-4 text-[color:var(--color-accent)]" />
+            Backups &amp; restore
+          </h3>
+          <p className="text-xs text-[color:var(--color-muted-fg)] mt-0.5">
+            A restore point is captured automatically before every sync. Back up on demand,
+            restore any point, or export/import as CSV.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={backupMut.isPending}
+            disabled={!scopeReady}
+            onClick={() => backupMut.mutate()}
+          >
+            <Save className="size-4" />
+            Back up now
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            loading={importMut.isPending}
+            onClick={() => fileRef.current?.click()}
+          >
+            <Upload className="size-4" />
+            Import CSV
+          </Button>
+          <input
+            ref={fileRef}
+            type="file"
+            accept=".csv,text/csv"
+            className="hidden"
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              if (f) importMut.mutate(f);
+              e.target.value = "";
+            }}
+          />
+        </div>
+      </div>
+
+      {backupMut.isError || importMut.isError || deleteMut.isError ? (
+        <p className="text-sm text-[color:var(--color-novarad-red)]">
+          That backup action didn&apos;t go through. Try again.
+        </p>
+      ) : null}
+      {restoreMsg ? (
+        <p className="text-sm text-[color:var(--color-base-fg)]">{restoreMsg}</p>
+      ) : null}
+
+      {snapshots.isLoading ? (
+        <Spinner size={18} />
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-[color:var(--color-muted-fg)]">No backups yet.</p>
+      ) : (
+        <div className="divide-y divide-[color:var(--color-border)]/60">
+          {rows.map((s) => (
+            <div key={s.snapshotId} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2 text-sm">
+              <span className="text-[color:var(--color-muted-fg)] tabular-nums w-44">
+                {formatDateTime(s.createdAt)}
+              </span>
+              <Badge variant={s.source === "auto_pre_apply" ? "neutral" : "accent"}>
+                {s.source === "auto_pre_apply" ? "auto" : s.source === "import" ? "import" : "manual"}
+              </Badge>
+              <span
+                className={
+                  s.issuerKey == null
+                    ? "text-[color:var(--color-caution)]"
+                    : "text-[color:var(--color-base-fg)]"
+                }
+              >
+                {issuerName(s.issuerKey)}
+              </span>
+              <span className="text-xs text-[color:var(--color-muted-fg)]">
+                {s.rowCount.toLocaleString()} codes
+              </span>
+              <span className="ml-auto flex items-center gap-1">
+                {confirmRestoreId === s.snapshotId ? (
+                  <>
+                    <span className="text-xs text-[color:var(--color-caution)]">
+                      Write these values back to M*Modal?
+                    </span>
+                    <Button
+                      variant="caution"
+                      size="sm"
+                      loading={restoreMut.isPending}
+                      onClick={() => restoreMut.mutate(s.snapshotId)}
+                    >
+                      Confirm restore
+                    </Button>
+                    <Button variant="ghost" size="sm" onClick={() => setConfirmRestoreId(null)}>
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRestoreMsg(null);
+                        setConfirmRestoreId(s.snapshotId);
+                      }}
+                      className="inline-flex items-center gap-1 text-xs text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-accent)]"
+                      aria-label={`Restore backup ${s.snapshotId}`}
+                    >
+                      <RotateCcw className="size-3.5" /> Restore
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => download(s.snapshotId)}
+                      className="inline-flex items-center gap-1 text-xs text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-accent)]"
+                      aria-label={`Export backup ${s.snapshotId} as CSV`}
+                    >
+                      <Download className="size-3.5" /> Export
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deleteMut.mutate(s.snapshotId)}
+                      disabled={deleteMut.isPending}
+                      className="inline-flex items-center gap-1 text-xs text-[color:var(--color-muted-fg)] hover:text-[color:var(--color-novarad-red)] disabled:opacity-50"
+                      aria-label={`Delete backup ${s.snapshotId}`}
+                    >
+                      <Trash2 className="size-3.5" /> Delete
+                    </button>
+                  </>
+                )}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

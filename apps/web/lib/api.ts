@@ -26,11 +26,13 @@ import type {
   RvuImport,
   RvuOverride,
   RvuOverrideRequest,
+  RvuRestoreResult,
   RvuSyncPreview,
   RvuSyncResult,
   RvuSyncRun,
   RvuSyncStatus,
   RvuValue,
+  RvuWriteBackSnapshot,
   StudyMergeOutcome,
   StudyMergeRequest,
   ServiceCodeMapping,
@@ -273,6 +275,51 @@ export const billingApi = {
     const res = await apiClient.post<RvuSyncResult>("/billing/rvu/sync", null, {
       params: { year, quarter, issuerKey: scope.issuerKey, allIssuers: scope.allIssuers },
     });
+    return res.data;
+  },
+
+  // ── M*Modal RVU backups / restore points ──────────────────────────────────
+
+  /** Recent backups (restore points), newest first. */
+  listSnapshots(limit = 25) {
+    return get<RvuWriteBackSnapshot[]>("/billing/rvu/sync/snapshots", { limit });
+  },
+
+  /** Capture a backup of a facility's (or all facilities') current RVUs right now. */
+  async backupNow(scope: { issuerKey?: string; allIssuers?: boolean }) {
+    const res = await apiClient.post<RvuWriteBackSnapshot>("/billing/rvu/sync/backup", null, {
+      params: { issuerKey: scope.issuerKey, allIssuers: scope.allIssuers },
+    });
+    return res.data;
+  },
+
+  /** Restore a backup: write its exact values back into M*Modal (transactional, audited). */
+  async restoreSnapshot(id: number) {
+    const res = await apiClient.post<RvuRestoreResult>(
+      `/billing/rvu/sync/snapshots/${id}/restore`,
+      null,
+    );
+    return res.data;
+  },
+
+  async deleteSnapshot(id: number) {
+    await apiClient.delete(`/billing/rvu/sync/snapshots/${id}`);
+  },
+
+  /** Download a backup as CSV ({ blob, filename }). */
+  exportSnapshot(id: number) {
+    return getBlob(`/billing/rvu/sync/snapshots/${id}/export`);
+  },
+
+  /** Upload a CSV of (IssuerKey, Code, RelativeValueUnit) as a new backup. */
+  async importSnapshot(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await apiClient.post<RvuWriteBackSnapshot>(
+      "/billing/rvu/sync/snapshots/import",
+      form,
+      { headers: { "Content-Type": "multipart/form-data" } },
+    );
     return res.data;
   },
 

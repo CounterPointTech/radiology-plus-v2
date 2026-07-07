@@ -75,6 +75,40 @@ public interface IBillingRepository
         int limit,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Persist an M*Modal RVU backup: a header + its captured rows (bulk). Returns the header.</summary>
+    Task<RvuWriteBackSnapshot> CreateSnapshotAsync(
+        Guid tenantId,
+        Guid userId,
+        Guid? issuerKey,
+        string label,
+        string source,
+        IReadOnlyList<RvuSnapshotRow> rows,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Latest N M*Modal backup headers for a tenant (newest first).</summary>
+    Task<IReadOnlyList<RvuWriteBackSnapshot>> ListSnapshotsAsync(
+        Guid tenantId,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>A single backup header, or null if it doesn't belong to the tenant.</summary>
+    Task<RvuWriteBackSnapshot?> GetSnapshotAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The captured (issuer, code) → RVU rows of a backup (empty if none/not owned).</summary>
+    Task<IReadOnlyList<RvuSnapshotRow>> GetSnapshotRowsAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Delete a backup (+ its rows). Returns false when no such backup exists for the tenant.</summary>
+    Task<bool> DeleteSnapshotAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>
     /// Atomically insert a billing.rvu_imports header, bulk-upsert the parsed CMS
     /// PPRRVU rows into billing.rvu_values for (tenant, year, quarter), and update the

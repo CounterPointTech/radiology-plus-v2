@@ -235,6 +235,27 @@ export interface RvuSyncStatus {
   lastRun: RvuSyncRun | null;
 }
 
+// A backup (restore point) of M*Modal RVU values. issuerKey null = all issuers.
+export interface RvuWriteBackSnapshot {
+  snapshotId: number;
+  issuerKey: string | null;
+  label: string;
+  source: "auto_pre_apply" | "manual" | "import";
+  rowCount: number;
+  createdByUserId: string;
+  createdAt: string;
+}
+
+export interface RvuRestoreResult {
+  configured: boolean;
+  restored: number;
+  unchanged: number;
+  missing: number;
+  success: boolean;
+  error: string | null;
+  ranAt: string;
+}
+
 export interface RvuOverride {
   overrideId: number;
   year: number;

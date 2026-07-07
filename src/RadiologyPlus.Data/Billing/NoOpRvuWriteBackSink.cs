@@ -47,4 +47,16 @@ public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
             Success: false, Error: "M*Modal write-back is not configured for this tenant.",
             RanAt: DateTimeOffset.Now));
     }
+
+    public Task<IReadOnlyList<RvuSnapshotRow>> CaptureCurrentRvusAsync(
+        Guid tenantId, Guid? issuerKey, CancellationToken cancellationToken = default)
+        => Task.FromResult<IReadOnlyList<RvuSnapshotRow>>(Array.Empty<RvuSnapshotRow>());
+
+    public Task<RvuRestoreResult> RestoreRvusAsync(
+        Guid tenantId, Guid? issuerKey, IReadOnlyList<RvuSnapshotRow> rows,
+        Guid userId, string username, CancellationToken cancellationToken = default)
+        => Task.FromResult(new RvuRestoreResult(
+            Configured: false, Restored: 0, Unchanged: 0, Missing: 0,
+            Success: false, Error: "M*Modal write-back is not configured for this tenant.",
+            RanAt: DateTimeOffset.Now));
 }

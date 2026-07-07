@@ -58,7 +58,45 @@ public interface IRvuWriteBackSink
         Guid userId,
         string username,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Read the current <c>[RelativeValueUnit]</c> of every active exam code in scope — a
+    /// backup snapshot of M*Modal's present state. <paramref name="issuerKey"/> scopes to one
+    /// facility; <c>null</c> = ALL issuers. Blanks are captured as <c>null</c>. Empty when the
+    /// write-back isn't configured.
+    /// </summary>
+    Task<IReadOnlyList<RvuSnapshotRow>> CaptureCurrentRvusAsync(
+        Guid tenantId,
+        Guid? issuerKey,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Restore a snapshot: transactionally write the supplied (issuer, code) → RVU values back
+    /// into M*Modal (diff-only; blanks restored verbatim), then dual-audit. Each row is written
+    /// to its own issuer, so a restore is inherently scoped to the snapshot's rows. Rolls back
+    /// on any failure.
+    /// </summary>
+    Task<RvuRestoreResult> RestoreRvusAsync(
+        Guid tenantId,
+        Guid? issuerKey,
+        IReadOnlyList<RvuSnapshotRow> rows,
+        Guid userId,
+        string username,
+        CancellationToken cancellationToken = default);
 }
+
+/// <summary>One captured exam-code RVU: <c>(issuer, code) → value</c>. <c>Rvu</c> null = blank in M*Modal.</summary>
+public sealed record RvuSnapshotRow(Guid IssuerKey, string Code, double? Rvu);
+
+/// <summary>Result of a snapshot restore write into M*Modal.</summary>
+public sealed record RvuRestoreResult(
+    bool Configured,
+    int Restored,
+    int Unchanged,
+    int Missing,
+    bool Success,
+    string? Error,
+    DateTimeOffset RanAt);
 
 /// <summary>
 /// One M*Modal issuer (facility) that owns exam codes. <see cref="ActiveCodeCount"/> is its

@@ -242,34 +242,157 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
 
     private readonly record struct CodeAggregate(int RowCount, int NullCount, double? Min, double? Max);
 
+    // ── Backup: read the current RVU of every active exam code in scope (blanks -> null).
+    public async Task<IReadOnlyList<RvuSnapshotRow>> CaptureCurrentRvusAsync(
+        Guid tenantId, Guid? issuerKey, CancellationToken cancellationToken = default)
+    {
+        var conn = await LoadConnectionAsync(tenantId, cancellationToken);
+        if (conn is null) return Array.Empty<RvuSnapshotRow>();
+
+        await using var sql = new SqlConnection(conn.ConnectionString);
+        await sql.OpenAsync(cancellationToken);
+        await using var cmd = sql.CreateCommand();
+        cmd.CommandTimeout = 120;
+        cmd.CommandText = issuerKey is null
+            ? "SELECT [IssuerKey], [Code], [RelativeValueUnit] FROM [Exam].[ExamCode] WHERE [IsDeleted] IS NULL"
+            : "SELECT [IssuerKey], [Code], [RelativeValueUnit] FROM [Exam].[ExamCode] WHERE [IsDeleted] IS NULL AND [IssuerKey] = @issuer";
+        if (issuerKey is Guid ik)
+            cmd.Parameters.Add(new SqlParameter("@issuer", SqlDbType.UniqueIdentifier) { Value = ik });
+
+        var rows = new List<RvuSnapshotRow>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            rows.Add(new RvuSnapshotRow(
+                IssuerKey: reader.GetGuid(0),
+                Code: reader.GetString(1),
+                Rvu: reader.IsDBNull(2) ? null : reader.GetDouble(2)));
+        }
+        return rows;
+    }
+
+    // ── Restore: write snapshot values back (diff-only, per-row issuer-scoped, blanks verbatim).
+    public async Task<RvuRestoreResult> RestoreRvusAsync(
+        Guid tenantId, Guid? issuerKey, IReadOnlyList<RvuSnapshotRow> rows,
+        Guid userId, string username, CancellationToken cancellationToken = default)
+    {
+        var conn = await LoadConnectionAsync(tenantId, cancellationToken);
+        if (conn is null)
+            return new RvuRestoreResult(false, 0, 0, 0, false,
+                "M*Modal write-back is not configured for this tenant.", DateTimeOffset.Now);
+
+        await using var sql = new SqlConnection(conn.ConnectionString);
+        await sql.OpenAsync(cancellationToken);
+
+        // Present state for the scope, keyed (issuer, code). Presence = an active row exists.
+        var current = new Dictionary<(Guid, string), double?>();
+        await using (var read = sql.CreateCommand())
+        {
+            read.CommandTimeout = 120;
+            read.CommandText = issuerKey is null
+                ? "SELECT [IssuerKey], [Code], [RelativeValueUnit] FROM [Exam].[ExamCode] WHERE [IsDeleted] IS NULL"
+                : "SELECT [IssuerKey], [Code], [RelativeValueUnit] FROM [Exam].[ExamCode] WHERE [IsDeleted] IS NULL AND [IssuerKey] = @issuer";
+            if (issuerKey is Guid ik0)
+                read.Parameters.Add(new SqlParameter("@issuer", SqlDbType.UniqueIdentifier) { Value = ik0 });
+            await using var rdr = await read.ExecuteReaderAsync(cancellationToken);
+            while (await rdr.ReadAsync(cancellationToken))
+                current[(rdr.GetGuid(0), rdr.GetString(1))] = rdr.IsDBNull(2) ? null : rdr.GetDouble(2);
+        }
+
+        var toRestore = new List<RvuSnapshotRow>();
+        int unchanged = 0, missing = 0;
+        foreach (var r in rows)
+        {
+            // TryGetValue is false only when no active row exists (a null RVU is a present key).
+            if (!current.TryGetValue((r.IssuerKey, r.Code), out var cur)) { missing++; continue; }
+            var same = (cur is null && r.Rvu is null)
+                || (cur.HasValue && r.Rvu.HasValue && Math.Abs(cur.Value - r.Rvu.Value) <= RvuEpsilon);
+            if (same) { unchanged++; continue; }
+            toRestore.Add(r);
+        }
+
+        int restored = 0;
+        if (toRestore.Count > 0)
+        {
+            await using var tx = (SqlTransaction)await sql.BeginTransactionAsync(cancellationToken);
+            try
+            {
+                const string updateSql =
+                    "UPDATE [Exam].[ExamCode] SET [RelativeValueUnit] = @rvu, [ModifiedDateTime] = SYSUTCDATETIME() " +
+                    "WHERE [Code] = @code AND [IsDeleted] IS NULL AND [IssuerKey] = @issuer";
+                foreach (var r in toRestore)
+                {
+                    await using var cmd = sql.CreateCommand();
+                    cmd.Transaction = tx;
+                    cmd.CommandText = updateSql;
+                    cmd.CommandTimeout = 120;
+                    cmd.Parameters.Add(new SqlParameter("@rvu", SqlDbType.Float) { Value = (object?)r.Rvu ?? DBNull.Value });
+                    cmd.Parameters.Add(new SqlParameter("@code", SqlDbType.NVarChar, 50) { Value = r.Code });
+                    cmd.Parameters.Add(new SqlParameter("@issuer", SqlDbType.UniqueIdentifier) { Value = r.IssuerKey });
+                    if (await cmd.ExecuteNonQueryAsync(cancellationToken) > 0) restored++;
+                }
+                await tx.CommitAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                await tx.RollbackAsync(cancellationToken);
+                _logger.LogError(ex, "M*Modal RVU restore failed for tenant {Tenant}; rolled back.", tenantId);
+                await InsertAuditAsync(tenantId, userId, username, "billing.rvu_restore", issuerKey?.ToString() ?? "ALL",
+                    success: false, ex.Message, RestoreMetadata(issuerKey, 0, unchanged, missing, false), cancellationToken);
+                return new RvuRestoreResult(true, 0, unchanged, missing, false, ex.Message, DateTimeOffset.Now);
+            }
+        }
+
+        await InsertAuditAsync(tenantId, userId, username, "billing.rvu_restore", issuerKey?.ToString() ?? "ALL",
+            success: true, null, RestoreMetadata(issuerKey, restored, unchanged, missing, true), cancellationToken);
+        return new RvuRestoreResult(true, restored, unchanged, missing, true, null, DateTimeOffset.Now);
+    }
+
+    private static object RestoreMetadata(Guid? issuerKey, int restored, int unchanged, int missing, bool success) => new
+    {
+        description = success
+            ? $"M*Modal RVU restore (issuer {issuerKey?.ToString() ?? "ALL"}): {restored} restored, {unchanged} unchanged, {missing} missing."
+            : $"M*Modal RVU restore (issuer {issuerKey?.ToString() ?? "ALL"}) FAILED and was rolled back.",
+        issuerKey,
+        restored,
+        unchanged,
+        missing,
+    };
+
     // ── Dual audit: write our append-only audit.access_logs row (the M*Modal write itself
     //    already committed/rolled back). before/after live in metadata.changes.
-    private async Task WriteAuditAsync(
+    private Task WriteAuditAsync(
         Guid tenantId, Guid userId, string username, short year, char quarter, Guid? issuerKey,
         bool success, int matched, int updated, int unchanged, int missing,
         List<RvuSyncDiff> changes, string? error, CancellationToken ct)
     {
+        var scope = issuerKey?.ToString() ?? "ALL issuers";
+        var metadata = new
+        {
+            description = success
+                ? $"M*Modal RVU write-back {year}{quarter} (issuer {scope}): {updated} updated, {unchanged} unchanged, {missing} missing."
+                : $"M*Modal RVU write-back {year}{quarter} (issuer {scope}) FAILED and was rolled back.",
+            year,
+            quarter = quarter.ToString(),
+            issuerKey,
+            matched,
+            updated,
+            unchanged,
+            missing,
+            changes = changes.Take(MaxAuditChanges)
+                .Select(c => new { hcpcs = c.Hcpcs, from = c.CurrentRvu, to = c.NewRvu })
+                .ToArray(),
+            changesTruncated = changes.Count > MaxAuditChanges,
+        };
+        return InsertAuditAsync(tenantId, userId, username, "billing.rvu_writeback", $"{year}{quarter}", success, error, metadata, ct);
+    }
+
+    private async Task InsertAuditAsync(
+        Guid tenantId, Guid userId, string username, string resourceType, string resourceId,
+        bool success, string? error, object metadata, CancellationToken ct)
+    {
         try
         {
-            var scope = issuerKey?.ToString() ?? "ALL issuers";
-            var metadata = new
-            {
-                description = success
-                    ? $"M*Modal RVU write-back {year}{quarter} (issuer {scope}): {updated} updated, {unchanged} unchanged, {missing} missing."
-                    : $"M*Modal RVU write-back {year}{quarter} (issuer {scope}) FAILED and was rolled back.",
-                year,
-                quarter = quarter.ToString(),
-                issuerKey,
-                matched,
-                updated,
-                unchanged,
-                missing,
-                changes = changes.Take(MaxAuditChanges)
-                    .Select(c => new { hcpcs = c.Hcpcs, from = c.CurrentRvu, to = c.NewRvu })
-                    .ToArray(),
-                changesTruncated = changes.Count > MaxAuditChanges,
-            };
-
             await using var conn = (NpgsqlConnection)await _appDb.OpenUnscopedAsync(ct);
             await using var cmd = conn.CreateCommand();
             cmd.CommandText = """
@@ -283,8 +406,8 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
             cmd.Parameters.Add(new NpgsqlParameter("user", NpgsqlDbType.Uuid) { Value = userId });
             cmd.Parameters.Add(new NpgsqlParameter("username", NpgsqlDbType.Text) { Value = (object?)username ?? DBNull.Value });
             cmd.Parameters.AddWithValue("action", (short)AccessAction.MModalWrite);
-            cmd.Parameters.AddWithValue("rtype", "billing.rvu_writeback");
-            cmd.Parameters.AddWithValue("rid", $"{year}{quarter}");
+            cmd.Parameters.AddWithValue("rtype", resourceType);
+            cmd.Parameters.AddWithValue("rid", resourceId);
             cmd.Parameters.AddWithValue("success", success);
             cmd.Parameters.Add(new NpgsqlParameter("error", NpgsqlDbType.Text) { Value = (object?)error ?? DBNull.Value });
             cmd.Parameters.AddWithValue("meta", JsonSerializer.Serialize(metadata));
@@ -292,10 +415,10 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
         }
         catch (Exception ex)
         {
-            // Audit-after-commit: never let an audit-write failure mask the actual sync outcome.
+            // Audit-after-commit: never let an audit-write failure mask the actual write outcome.
             _logger.LogError(ex,
-                "M*Modal RVU write-back: failed to write audit.access_logs for tenant {Tenant} {Year}{Quarter}.",
-                tenantId, year, quarter);
+                "M*Modal write-back: failed to write audit.access_logs for tenant {Tenant} ({Resource}).",
+                tenantId, resourceType);
         }
     }
 
