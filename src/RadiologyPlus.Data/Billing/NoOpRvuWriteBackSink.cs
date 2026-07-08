@@ -19,6 +19,9 @@ public sealed class NoOpRvuWriteBackSink : IRvuWriteBackSink
     public Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
         => Task.FromResult(false);
 
+    public Task<RvuWriteBackConnectionTest> TestConnectionAsync(Guid tenantId, CancellationToken cancellationToken = default)
+        => Task.FromResult(new RvuWriteBackConnectionTest(Configured: false, Ok: false, IssuerCount: 0, Error: "Write-back is disabled."));
+
     public Task<IReadOnlyList<MModalIssuer>> ListIssuersAsync(Guid tenantId, CancellationToken cancellationToken = default)
         => Task.FromResult<IReadOnlyList<MModalIssuer>>(Array.Empty<MModalIssuer>());
 

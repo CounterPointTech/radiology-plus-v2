@@ -22,7 +22,10 @@ import type {
   ReconciliationLineDetailResponse,
   ReconciliationRun,
   RunReconciliationRequest,
+  MModalConnectionInfo,
+  MModalConnectionRequest,
   MModalIssuer,
+  RvuConnectionTest,
   RvuImport,
   RvuOverride,
   RvuOverrideRequest,
@@ -232,6 +235,31 @@ export const billingApi = {
   /** CPT master joined to CMS truth for the management view's "CMS check" surface. */
   cptMasterCmsCheck(params: { year: number; limit?: number }) {
     return get<CptMasterCmsRow[]>("/billing/cpt-master/cms-check", params);
+  },
+
+  // ── M*Modal connection settings (in-app provisioning) ─────────────────────
+
+  /** The tenant's M*Modal connection config (password redacted), or configured=false. */
+  getMModalConnection() {
+    return get<{ configured: boolean; connection: MModalConnectionInfo | null }>(
+      "/billing/rvu/sync/connection",
+    );
+  },
+
+  /** Create or update the M*Modal connection (password omitted = keep existing). */
+  async saveMModalConnection(body: MModalConnectionRequest) {
+    const res = await apiClient.put<MModalConnectionInfo>("/billing/rvu/sync/connection", body);
+    return res.data;
+  },
+
+  /** Open the configured connection and report reachability + issuer count. */
+  async testMModalConnection() {
+    const res = await apiClient.post<RvuConnectionTest>("/billing/rvu/sync/connection/test", null);
+    return res.data;
+  },
+
+  async deleteMModalConnection() {
+    await apiClient.delete("/billing/rvu/sync/connection");
   },
 
   // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ────────────────────

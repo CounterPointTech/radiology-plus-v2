@@ -235,6 +235,38 @@ export interface RvuSyncStatus {
   lastRun: RvuSyncRun | null;
 }
 
+// A tenant's M*Modal connection config (password redacted to hasPassword).
+export interface MModalConnectionInfo {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  useSsl: boolean;
+  trustServerCert: boolean;
+  issuerKey: string | null;
+  hasPassword: boolean;
+  updatedAt: string;
+}
+
+// Write-shape for the connection settings form. password omitted/null = keep existing.
+export interface MModalConnectionRequest {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password?: string | null;
+  useSsl: boolean;
+  trustServerCert: boolean;
+  issuerKey?: string | null;
+}
+
+export interface RvuConnectionTest {
+  configured: boolean;
+  ok: boolean;
+  issuerCount: number;
+  error: string | null;
+}
+
 // A backup (restore point) of M*Modal RVU values. issuerKey null = all issuers.
 export interface RvuWriteBackSnapshot {
   snapshotId: number;

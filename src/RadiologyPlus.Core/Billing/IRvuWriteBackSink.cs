@@ -24,6 +24,12 @@ public interface IRvuWriteBackSink
     Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Test the configured connection by opening it and counting issuers. Catches connection
+    /// errors and returns them in <see cref="RvuWriteBackConnectionTest.Error"/> rather than throwing.
+    /// </summary>
+    Task<RvuWriteBackConnectionTest> TestConnectionAsync(Guid tenantId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// List the M*Modal issuers (facilities) that have active exam codes, so the operator can
     /// choose which one to sync. The connection's pinned issuer is flagged <see cref="MModalIssuer.IsDefault"/>.
     /// Empty when the write-back isn't configured.
@@ -109,6 +115,9 @@ public sealed record MModalIssuer(
     string? Description,
     int ActiveCodeCount,
     bool IsDefault);
+
+/// <summary>Result of a connection test. <see cref="Ok"/> false with a non-null <see cref="Error"/> = couldn't connect.</summary>
+public sealed record RvuWriteBackConnectionTest(bool Configured, bool Ok, int IssuerCount, string? Error);
 
 /// <summary>One (HCPCS → work RVU) figure bound for the dictation system.</summary>
 public sealed record RvuWriteBackEntry(string Hcpcs, decimal WorkRvu);

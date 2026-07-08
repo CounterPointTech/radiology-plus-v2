@@ -45,6 +45,12 @@ public static class BillingEndpoints
         group.MapDelete("/rvu/overrides/{code}", DeleteRvuOverrideAsync).WithName("BillingDeleteRvuOverride");
         group.MapGet("/cpt-master/cms-check", CptMasterCmsCheckAsync).WithName("BillingCptMasterCmsCheck");
 
+        // M*Modal connection settings (in-app provisioning)
+        group.MapGet("/rvu/sync/connection", GetConnectionAsync).WithName("BillingRvuConnectionGet");
+        group.MapPut("/rvu/sync/connection", SetConnectionAsync).WithName("BillingRvuConnectionSet");
+        group.MapPost("/rvu/sync/connection/test", TestRvuConnectionAsync).WithName("BillingRvuConnectionTest");
+        group.MapDelete("/rvu/sync/connection", DeleteConnectionAsync).WithName("BillingRvuConnectionDelete");
+
         // M*Modal RVU write-back (project-ffi-rvu-writeback)
         group.MapGet("/rvu/sync/status", RvuSyncStatusAsync).WithName("BillingRvuSyncStatus");
         group.MapGet("/rvu/sync/issuers", ListRvuSyncIssuersAsync).WithName("BillingRvuSyncIssuers");
@@ -469,6 +475,65 @@ public static class BillingEndpoints
         var rows = await repo.ListRecentRvuImportsAsync(
             user.TenantId, Math.Clamp(limit ?? 25, 1, 200), ct);
         return Results.Ok(rows);
+    }
+
+    // ── M*Modal connection settings (in-app provisioning) ──────────────────
+
+    [Authorize]
+    private static async Task<IResult> GetConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        var info = await store.GetAsync(user.TenantId, ct);
+        return Results.Ok(new { configured = info is not null, connection = info });
+    }
+
+    [Authorize]
+    private static async Task<IResult> SetConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store,
+        [FromBody] MModalConnectionUpsert body, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        if (body is null) return Results.BadRequest(new { error = "Body required." });
+
+        var host = body.Host?.Trim() ?? "";
+        var database = string.IsNullOrWhiteSpace(body.Database) ? "ClinicalDataStore" : body.Database.Trim();
+        var username = body.Username?.Trim() ?? "";
+        if (host.Length == 0) return Results.BadRequest(new { error = "Host is required." });
+        if (username.Length == 0) return Results.BadRequest(new { error = "Username is required." });
+        var port = body.Port > 0 ? body.Port : 1433;
+
+        var existing = await store.GetAsync(user.TenantId, ct);
+        if (existing is null && string.IsNullOrEmpty(body.Password))
+            return Results.BadRequest(new { error = "A password is required to set up a new connection." });
+
+        await store.UpsertAsync(user.TenantId, new MModalConnectionUpsert(
+            host, port, database, username, body.Password,
+            body.UseSsl, body.TrustServerCert, body.IssuerKey), ct);
+
+        var saved = await store.GetAsync(user.TenantId, ct);
+        return Results.Ok(saved);
+    }
+
+    [Authorize]
+    private static async Task<IResult> TestRvuConnectionAsync(
+        ICurrentUser currentUser, IRvuWriteBackSink sink, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        var result = await sink.TestConnectionAsync(user.TenantId, ct);
+        return Results.Ok(result);
+    }
+
+    [Authorize]
+    private static async Task<IResult> DeleteConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        return await store.DeleteAsync(user.TenantId, ct) ? Results.NoContent() : Results.NotFound();
     }
 
     // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────

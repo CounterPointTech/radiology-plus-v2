@@ -48,6 +48,29 @@ public sealed class MModalRvuWriteBackSink : IRvuWriteBackSink
     public async Task<bool> IsConfiguredAsync(Guid tenantId, CancellationToken cancellationToken = default)
         => await LoadConnectionAsync(tenantId, cancellationToken) is not null;
 
+    public async Task<RvuWriteBackConnectionTest> TestConnectionAsync(
+        Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        var conn = await LoadConnectionAsync(tenantId, cancellationToken);
+        if (conn is null)
+            return new RvuWriteBackConnectionTest(Configured: false, Ok: false, IssuerCount: 0, Error: "No connection configured.");
+        try
+        {
+            await using var sql = new SqlConnection(conn.ConnectionString);
+            await sql.OpenAsync(cancellationToken);
+            await using var cmd = sql.CreateCommand();
+            cmd.CommandTimeout = 20;
+            cmd.CommandText = "SELECT COUNT(DISTINCT [IssuerKey]) FROM [Exam].[ExamCode] WHERE [IsDeleted] IS NULL";
+            var count = await cmd.ExecuteScalarAsync(cancellationToken) is int c ? c : 0;
+            return new RvuWriteBackConnectionTest(Configured: true, Ok: true, IssuerCount: count, Error: null);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "M*Modal connection test failed for tenant {Tenant}.", tenantId);
+            return new RvuWriteBackConnectionTest(Configured: true, Ok: false, IssuerCount: 0, Error: ex.Message);
+        }
+    }
+
     public async Task<RvuSyncPreview> PreviewAsync(
         Guid tenantId, short year, char quarter, Guid? issuerKey,
         IReadOnlyList<RvuWriteBackEntry> desired, CancellationToken cancellationToken = default)
