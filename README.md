@@ -41,7 +41,8 @@ src/
   RadiologyPlus.Common/         <-- shared helpers, encryption
   RadiologyPlus.Migrator/       <-- DB migration runner
 apps/
-  web/                          <-- Next.js app (canonical path)
+  web/                          <-- Next.js clinical app (validation, billing)
+  admin/                        <-- Next.js technical console (scripts, notifications, admin)
 tests/
   *.Tests/                      <-- xUnit projects per src project
 docs/
@@ -77,15 +78,28 @@ npm run dev
 
 ### Run
 
+The stack is split into a clinical side and a technical side (the tech/clinical split):
+
 ```powershell
-# API (default https://localhost:7171)
+# --- Clinical stack ---
+# API (default https://localhost:7171 / http://localhost:5171)
 dotnet run --project src/RadiologyPlus.API
 
-# Service worker
+# Clinical service worker (ReadyStudiesProjector, HeartbeatWorker)
 dotnet run --project src/RadiologyPlus.Service
 
-# Web (default http://localhost:3000)
-cd apps/web; npm run dev
+# Clinical web (run on port 3002 in dev — 3000/3001 are taken; use the PORT env var)
+cd apps/web; $env:PORT='3002'; npm run dev
+
+# --- Technical stack ---
+# Admin API (default https://localhost:7181 / http://localhost:5181)
+dotnet run --project src/RadiologyPlus.AdminApi
+
+# Technical service worker (ScriptScheduler, NotificationOrchestrator)
+dotnet run --project src/RadiologyPlus.AdminService
+
+# Admin web (port 3100)
+cd apps/admin; $env:PORT='3100'; npm run dev
 ```
 
 ## Phased plan

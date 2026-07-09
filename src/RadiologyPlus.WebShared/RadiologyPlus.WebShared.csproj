@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RadiologyPlus.WebShared</RootNamespace>
+    <Description>Auth plumbing shared by the API hosts: tenant/user middleware, JWT token service.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.6.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\RadiologyPlus.Core\RadiologyPlus.Core.csproj" />
+  </ItemGroup>
+</Project>

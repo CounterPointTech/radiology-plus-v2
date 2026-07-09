@@ -8,7 +8,7 @@ using RadiologyPlus.Core.Audit;
 using RadiologyPlus.Core.Identity;
 using RadiologyPlus.Data.Tenancy;
 
-namespace RadiologyPlus.API.Endpoints;
+namespace RadiologyPlus.AdminApi.Endpoints;
 
 public static class AuthEndpoints
 {

@@ -1,8 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
   <PropertyGroup>
-    <RootNamespace>RadiologyPlus.Service</RootNamespace>
-    <Description>Clinical worker host running ReadyStudiesProjector and HeartbeatWorker.</Description>
-    <UserSecretsId>radiology-plus-service-7f3c4a2e-8b1d-4e6f-9a5c-2d8e9f0a1b3c</UserSecretsId>
+    <RootNamespace>RadiologyPlus.AdminService</RootNamespace>
+    <Description>Technical worker host running ScriptScheduler and NotificationOrchestrator.</Description>
+    <UserSecretsId>radiology-plus-adminservice-1b8d5e3f-2c4a-4f9b-8e6d-7a0c9b1d2e4f</UserSecretsId>
     <OutputType>exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
@@ -10,18 +10,16 @@
     <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.0" />
     <PackageReference Include="Microsoft.Extensions.Configuration.UserSecrets" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="10.0.0" />
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="10.0.0" />
     <PackageReference Include="Serilog.Extensions.Hosting" Version="9.0.0" />
     <PackageReference Include="Serilog.Settings.Configuration" Version="9.0.0" />
     <PackageReference Include="Serilog.Sinks.Console" Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.File" Version="6.0.0" />
-    <PackageReference Include="Serilog.Sinks.PostgreSQL" Version="2.3.0" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\RadiologyPlus.Core\RadiologyPlus.Core.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Data\RadiologyPlus.Data.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Common\RadiologyPlus.Common.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Scripting\RadiologyPlus.Scripting.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.Notifications\RadiologyPlus.Notifications.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="appsettings.json">

@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+/* Radiology Plus design tokens — shared identity with apps/web */
+@theme {
+  --color-base-bg: oklch(0.13 0.02 250);
+  --color-base-fg: oklch(0.95 0.02 250);
+  --color-surface: oklch(0.18 0.025 250);
+  --color-surface-2: oklch(0.22 0.03 250);
+  --color-border: oklch(0.28 0.03 250);
+  --color-muted-fg: oklch(0.68 0.02 250);
+
+  /* Signature accent: teal-leaning blue */
+  --color-accent: oklch(0.72 0.13 210);
+  --color-accent-fg: oklch(0.15 0.03 210);
+
+  /* Warm caution */
+  --color-caution: oklch(0.74 0.18 25);
+
+  /* Sparing NovaRad red nod */
+  --color-novarad-red: oklch(0.55 0.20 25);
+
+  --font-sans: var(--font-sans-loaded), "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-mono-loaded), "JetBrains Mono", ui-monospace, monospace;
+  --font-display: var(--font-display-loaded), "Fraunces", "Inter", serif;
+
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.875rem;
+}
+
+:root {
+  color-scheme: dark light;
+}
+
+@media (prefers-color-scheme: light) {
+  @theme {
+    --color-base-bg: oklch(0.98 0.01 250);
+    --color-base-fg: oklch(0.18 0.02 250);
+    --color-surface: oklch(0.96 0.01 250);
+    --color-surface-2: oklch(0.93 0.015 250);
+    --color-border: oklch(0.88 0.02 250);
+    --color-muted-fg: oklch(0.45 0.02 250);
+    --color-accent-fg: oklch(0.97 0.01 210);
+  }
+}
+
+html, body {
+  background: var(--color-base-bg);
+  color: var(--color-base-fg);
+  font-family: var(--font-sans);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}
