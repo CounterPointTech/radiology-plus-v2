@@ -31,6 +31,7 @@ import {
   type CrosswalkStatus,
   type CrosswalkSuggestion,
   type ServiceCodeMapping,
+  type UnmappedFacilityBreakdown,
   type UnmappedServiceCode,
 } from "@/lib/types";
 
@@ -66,7 +67,7 @@ function csvField(value: string | number | null): string {
 // importer ignores but that help the user prioritize while filling in CPTs.
 function buildUnmappedCsv(codes: UnmappedServiceCode[]): string {
   const header = [
-    "service_code", "cpt_code", "suggested_cpt", "suggested_rvu",
+    "service_code", "cpt_code", "site_code", "suggested_cpt", "suggested_rvu",
     "type", "description", "facilities", "reports", "lines", "note",
   ];
   const lines = [header.join(",")];
@@ -78,6 +79,7 @@ function buildUnmappedCsv(codes: UnmappedServiceCode[]): string {
       [
         csvField(c.code),
         "", // cpt_code — left blank for the user to confirm, then re-import
+        "", // site_code — blank = tenant-wide; duplicate the row + fill a site for per-site
         csvField(c.suggestedCpt), // a candidate only — review before mapping
         csvField(c.suggestedWorkRvu == null ? "" : c.suggestedWorkRvu.toFixed(2)),
         csvField(c.kind === "cpt_missing_from_master" ? "Missing CPT" : "Non-CPT"),
@@ -138,6 +140,12 @@ interface MapDialogTarget {
   description: string | null;
   year: number | null; // null → suggester defaults to the master's latest year
   currentCpt: string | null;
+  // Sites where this code is still unmapped (from the report row) — the source of
+  // the "apply to specific facilities" checklist. Empty when editing from the list.
+  facilities: UnmappedFacilityBreakdown[];
+  // When editing an existing mapping, the scope of the row being edited
+  // (null = tenant-wide row, a site_code = that site's row). null in create mode.
+  editSiteCode: string | null;
 }
 
 export default function UnmappedCodesPage() {
@@ -193,6 +201,7 @@ export default function UnmappedCodesPage() {
         status,
         source: m.source,
         note: m.note,
+        siteCode: m.siteCode, // toggle the SAME scope (tenant-wide or site row)
       }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["unmapped"] });
@@ -339,9 +348,9 @@ export default function UnmappedCodesPage() {
               <Input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search descriptions…"
+                placeholder="Search code or description…"
                 className="pl-9 w-64"
-                aria-label="Search unmapped codes by description"
+                aria-label="Search unmapped codes by code or description"
               />
             </div>
             <select
@@ -470,6 +479,8 @@ export default function UnmappedCodesPage() {
                                 description: c.description,
                                 year: c.year,
                                 currentCpt: null,
+                                facilities: c.facilities ?? [],
+                                editSiteCode: null,
                               })
                             }
                           >
@@ -546,6 +557,7 @@ export default function UnmappedCodesPage() {
                     <tr>
                       <th className="px-3 py-2 font-medium">Service code</th>
                       <th className="px-3 py-2 font-medium">CPT</th>
+                      <th className="px-3 py-2 font-medium">Scope</th>
                       <th className="px-3 py-2 font-medium">Status</th>
                       <th className="px-3 py-2 font-medium">Source</th>
                       <th className="px-3 py-2 font-medium text-right">Applied</th>
@@ -559,6 +571,11 @@ export default function UnmappedCodesPage() {
                       <tr key={m.crosswalkId} className="border-t border-[color:var(--color-border)]">
                         <td className="px-3 py-2 font-mono">{m.serviceCode}</td>
                         <td className="px-3 py-2 font-mono">{m.cptCode}</td>
+                        <td className="px-3 py-2">
+                          <Badge variant={m.siteCode == null ? "neutral" : "accent"}>
+                            {m.siteCode ?? "All facilities"}
+                          </Badge>
+                        </td>
                         <td className="px-3 py-2">
                           <Badge variant={m.status === 1 ? "success" : "danger"}>
                             {m.status === 1 ? "Approved" : "Suppressed"}
@@ -585,6 +602,8 @@ export default function UnmappedCodesPage() {
                                   description: m.approvedForDescription,
                                   year: null,
                                   currentCpt: m.cptCode,
+                                  facilities: [],
+                                  editSiteCode: m.siteCode,
                                 })
                               }
                               aria-label="Edit mapping"
@@ -655,6 +674,12 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
   const [note, setNote] = useState("");
   const [picked, setPicked] = useState<CrosswalkSuggestion | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  // Scope chooser (create mode only): tenant-wide default vs a chosen set of sites.
+  const [scope, setScope] = useState<"tenant" | "facilities">("tenant");
+  const [selectedSites, setSelectedSites] = useState<Set<string>>(new Set());
+  // "Show all sites" reveals the full Novarad site list so a code can be mapped at a
+  // site it hasn't appeared at yet (proactive). Fetched lazily, only when needed.
+  const [showAllSites, setShowAllSites] = useState(false);
 
   // Search field drives the suggester. Pre-filled with the Novarad description
   // when available; the user can clear and type their own search (most unmapped
@@ -682,11 +707,35 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
     staleTime: 60_000,
   });
 
+  // The full set of Novarad sites for the "show all sites" expander. Lazy: only fetched
+  // once the user is scoping to facilities AND has asked for the full list (or the code
+  // has no appearing sites to scope to). The site list is stable, so cache it broadly.
+  const wantsAllSites =
+    scope === "facilities" && (showAllSites || (target?.facilities.length ?? 0) === 0);
+  const allSites = useQuery({
+    queryKey: ["billing-sites"],
+    queryFn: () => billingApi.listSites(),
+    enabled: target !== null && wantsAllSites,
+    staleTime: 5 * 60_000,
+  });
+
   function reset() {
     setManualCpt("");
     setNote("");
     setPicked(null);
     setFormError(null);
+    setScope("tenant");
+    setSelectedSites(new Set());
+    setShowAllSites(false);
+  }
+
+  function toggleSite(siteCode: string, checked: boolean) {
+    setSelectedSites((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(siteCode);
+      else next.delete(siteCode);
+      return next;
+    });
   }
 
   const saveMutation = useMutation({
@@ -699,18 +748,44 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
         : null;
       const combinedNote = [note.trim(), noteSuffix].filter(Boolean).join(" — ") || null;
 
-      const payload = {
+      // Edit: update the exact row being edited (keeps its scope).
+      if (isEdit) {
+        return billingApi.updateCrosswalk(target.serviceCode, {
+          serviceCode: target.serviceCode,
+          cptCode: cpt,
+          source: (picked ? 2 : 1) as 1 | 2,
+          status: 1 as const,
+          note: combinedNote,
+          approvedForDescription: target.description ?? null,
+          siteCode: target.editSiteCode,
+        });
+      }
+
+      // Create, site scope: one upserting row per selected site (batch).
+      if (scope === "facilities") {
+        const sites = [...selectedSites];
+        if (sites.length === 0) throw new Error("Pick at least one facility.");
+        return billingApi.bulkImportCrosswalk({
+          rows: sites.map((siteCode) => ({
+            serviceCode: target.serviceCode,
+            cptCode: cpt,
+            note: combinedNote,
+            siteCode,
+          })),
+          onConflict: "update",
+        });
+      }
+
+      // Create, tenant-wide default.
+      return billingApi.createCrosswalk({
         serviceCode: target.serviceCode,
         cptCode: cpt,
         source: (picked ? 2 : 1) as 1 | 2,
-        status: 1 as 1,
+        status: 1 as const,
         note: combinedNote,
         approvedForDescription: target.description ?? null,
-      };
-
-      return isEdit
-        ? billingApi.updateCrosswalk(target.serviceCode, payload)
-        : billingApi.createCrosswalk(payload);
+        siteCode: null,
+      });
     },
     onSuccess: () => {
       reset();
@@ -738,7 +813,15 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
   const suppressed = sug?.suppressed ?? false;
   const candidates = sug?.candidates ?? [];
   const existing = sug?.existing ?? null;
-  const canSave = !suppressed && Boolean(picked?.cptCode || manualCpt.trim());
+  // Sites the code appears at (shown first, with report counts); the rest of the
+  // tenant's sites are revealed on demand via "show all sites" for proactive mapping.
+  const selectableSites = target.facilities;
+  const appearingSet = new Set(selectableSites.map((f) => f.siteCode));
+  const otherSites = (allSites.data ?? []).filter((s) => !appearingSet.has(s));
+  const canSave =
+    !suppressed &&
+    Boolean(picked?.cptCode || manualCpt.trim()) &&
+    (isEdit || scope === "tenant" || selectedSites.size > 0);
   const title = isEdit
     ? `Edit mapping for ${target.serviceCode}`
     : `Map ${target.serviceCode} to a CPT`;
@@ -761,7 +844,7 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
           </div>
         ) : null}
 
-        {existing && !suppressed && !isEdit ? (
+        {existing && !suppressed && !isEdit && scope === "tenant" ? (
           <div className="rounded-md border border-[color:var(--color-accent)]/40 bg-[color:var(--color-accent)]/10 px-3 py-2 text-xs">
             Already mapped to <span className="font-mono font-medium">{existing.cptCode}</span>.
             Saving will overwrite (audited).
@@ -770,7 +853,8 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
 
         {isEdit && target.currentCpt ? (
           <div className="rounded-md border border-[color:var(--color-border)] bg-[color:var(--color-surface-2)] px-3 py-2 text-xs">
-            Currently mapped to <span className="font-mono font-medium">{target.currentCpt}</span>.
+            Currently mapped to <span className="font-mono font-medium">{target.currentCpt}</span>{" "}
+            ({target.editSiteCode == null ? "all facilities" : "this site only"}).
           </div>
         ) : null}
 
@@ -859,6 +943,120 @@ function MapCodeDialog({ target, onClose, onSuccess }: MapCodeDialogProps) {
             disabled={suppressed}
           />
         </div>
+
+        {!isEdit ? (
+          <div className="space-y-1.5">
+            <Label>Apply to</Label>
+            <div className="flex items-center gap-1">
+              {(["tenant", "facilities"] as const).map((s) => {
+                const disabled = suppressed;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => setScope(s)}
+                    className={`px-2.5 py-1 rounded-md text-xs border disabled:opacity-50 disabled:cursor-not-allowed ${
+                      scope === s
+                        ? "border-[color:var(--color-accent)] bg-[color:var(--color-accent)]/10 text-[color:var(--color-accent)]"
+                        : "border-[color:var(--color-border)] text-[color:var(--color-muted-fg)] hover:bg-[color:var(--color-surface-2)]"
+                    }`}
+                  >
+                    {s === "tenant" ? "All facilities (default)" : "Specific facilities"}
+                  </button>
+                );
+              })}
+            </div>
+            {scope === "facilities" ? (
+              <div className="rounded-md border border-[color:var(--color-border)] p-2 space-y-1 max-h-56 overflow-y-auto">
+                {selectableSites.length > 0 ? (
+                  <>
+                    <p className="px-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+                      Sites where this code appears
+                    </p>
+                    {selectableSites.map((f) => (
+                      <label
+                        key={f.siteCode}
+                        className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedSites.has(f.siteCode)}
+                          onChange={(e) => toggleSite(f.siteCode, e.target.checked)}
+                          className="accent-[color:var(--color-accent)]"
+                        />
+                        <span className="font-mono text-xs">{f.siteCode}</span>
+                        <span className="text-[11px] text-[color:var(--color-muted-fg)]">
+                          · {f.reportCount} report{f.reportCount === 1 ? "" : "s"}
+                        </span>
+                      </label>
+                    ))}
+                  </>
+                ) : (
+                  <p className="px-1 text-[11px] text-[color:var(--color-muted-fg)]">
+                    This code hasn&apos;t appeared at any site in this window. Pick from all
+                    sites below.
+                  </p>
+                )}
+
+                {showAllSites || selectableSites.length === 0 ? (
+                  <div className="mt-1 space-y-1 border-t border-[color:var(--color-border)] pt-1">
+                    <p className="px-1 text-[10px] uppercase tracking-[0.18em] text-[color:var(--color-muted-fg)]">
+                      {selectableSites.length > 0 ? "All other sites" : "All sites"}
+                    </p>
+                    {allSites.isLoading ? (
+                      <div className="flex justify-center py-3">
+                        <Spinner size={16} />
+                      </div>
+                    ) : allSites.isError ? (
+                      <p className="px-1 text-[11px] text-[color:var(--color-novarad-red)]">
+                        Couldn&apos;t load the site list.{" "}
+                        <button
+                          type="button"
+                          className="underline underline-offset-2"
+                          onClick={() => allSites.refetch()}
+                        >
+                          Try again
+                        </button>
+                      </p>
+                    ) : otherSites.length === 0 ? (
+                      <p className="px-1 text-[11px] text-[color:var(--color-muted-fg)]">
+                        No other sites.
+                      </p>
+                    ) : (
+                      otherSites.map((s) => (
+                        <label
+                          key={s}
+                          className="flex items-center gap-2 text-sm px-1 py-0.5 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedSites.has(s)}
+                            onChange={(e) => toggleSite(s, e.target.checked)}
+                            className="accent-[color:var(--color-accent)]"
+                          />
+                          <span className="font-mono text-xs">{s}</span>
+                        </label>
+                      ))
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowAllSites(true)}
+                    className="px-1 pt-1 text-xs text-[color:var(--color-accent)] hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/50 rounded"
+                  >
+                    Show all sites
+                  </button>
+                )}
+              </div>
+            ) : (
+              <p className="text-[11px] text-[color:var(--color-muted-fg)]">
+                One mapping used by every facility, unless a site-specific mapping overrides it.
+              </p>
+            )}
+          </div>
+        ) : null}
 
         <div className="space-y-1.5">
           <Label htmlFor="note">Note (optional)</Label>
@@ -1000,6 +1198,7 @@ function BulkImportDialog({ open, onClose }: BulkImportDialogProps) {
     const scCol = header.findIndex((h) => h === "service_code" || h === "servicecode");
     const cptCol = header.findIndex((h) => h === "cpt_code" || h === "cptcode" || h === "cpt");
     const noteCol = header.findIndex((h) => h === "note");
+    const siteCol = header.findIndex((h) => h === "site_code" || h === "sitecode");
     if (scCol < 0 || cptCol < 0) {
       setRows(null);
       setParseError("CSV must have a header with service_code and cpt_code columns.");
@@ -1011,8 +1210,12 @@ function BulkImportDialog({ open, onClose }: BulkImportDialogProps) {
       const sc = (r[scCol] ?? "").trim();
       const cpt = (r[cptCol] ?? "").trim();
       const note = noteCol >= 0 ? (r[noteCol] ?? "").trim() : "";
+      // Optional site_code: a raw Novarad site scopes the row to that site;
+      // blank/absent = tenant-wide.
+      const siteRaw = siteCol >= 0 ? (r[siteCol] ?? "").trim() : "";
+      const siteCode = siteRaw || null;
       if (!sc || !cpt) continue;
-      out.push({ serviceCode: sc, cptCode: cpt, note: note || null });
+      out.push({ serviceCode: sc, cptCode: cpt, note: note || null, siteCode });
     }
     if (out.length === 0) {
       setRows(null);
@@ -1043,7 +1246,7 @@ function BulkImportDialog({ open, onClose }: BulkImportDialogProps) {
         onClose();
       }}
       title="Bulk import crosswalk CSV"
-      description="Header: service_code,cpt_code,note (note optional). Tip: use Export CSV, fill in cpt_code, and re-import here — extra columns are ignored and rows with a blank cpt_code are skipped."
+      description="Header: service_code,cpt_code,site_code,note (site_code and note optional; blank site_code = all facilities). Tip: use Export CSV, fill in cpt_code, and re-import here — extra columns are ignored and rows with a blank cpt_code are skipped."
     >
       <div className="space-y-4">
         <div className="space-y-1.5">
@@ -1101,7 +1304,7 @@ function BulkImportDialog({ open, onClose }: BulkImportDialogProps) {
                   .filter((r) => r.outcome === "error")
                   .slice(0, 10)
                   .map((r) => (
-                    <li key={r.serviceCode}>
+                    <li key={`${r.serviceCode}-${r.siteCode ?? "all"}`}>
                       {r.serviceCode}: {r.error}
                     </li>
                   ))}

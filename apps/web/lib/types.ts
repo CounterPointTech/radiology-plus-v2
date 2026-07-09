@@ -171,8 +171,9 @@ export interface RvuImport {
 export interface RvuOverride {
   overrideId: number;
   year: number;
-  code: string; // single HCPCS or ";"-delimited bundle
-  facilityId: number | null; // always null (tenant-wide) from the management UI
+  code: string; // single HCPCS or ";"-delimited bundle (backend-canonicalized for bundles)
+  facilityId: number | null; // vestigial (always null); superseded by siteCode
+  siteCode: string | null; // null = tenant-wide; set = site-specific (raw Novarad site_code)
   overrideWorkRvu: number;
   note: string | null;
   createdByUserId: string | null;
@@ -184,6 +185,7 @@ export interface RvuOverrideRequest {
   year: number;
   overrideWorkRvu: number;
   note?: string | null;
+  siteCode?: string | null; // null/omitted = tenant-wide; set = site-specific
 }
 
 // Verdict comparing a CPT-master row to CMS. Singles: matches | differs |
@@ -346,6 +348,7 @@ export interface ServiceCodeMapping {
   serviceCode: string;
   cptCode: string;
   status: CrosswalkStatus;
+  siteCode: string | null;     // null = tenant-wide default; set = site-specific (raw Novarad site_code)
   source: CrosswalkSource;
   note: string | null;
   approvedForDescription: string | null;
@@ -370,6 +373,7 @@ export interface CrosswalkUpsertRequest {
   status?: CrosswalkStatus;
   note?: string | null;
   approvedForDescription?: string | null;
+  siteCode?: string | null; // null = tenant-wide default; set = site-specific
 }
 
 export interface CrosswalkSuggestion {
@@ -391,12 +395,14 @@ export interface BulkImportRow {
   serviceCode: string;
   cptCode: string;
   note?: string | null;
+  siteCode?: string | null; // null = tenant-wide default; set = site-specific
 }
 
 export interface BulkImportRowResult {
   serviceCode: string;
   outcome: "inserted" | "updated" | "skipped" | "error";
   error: string | null;
+  siteCode: string | null;
 }
 
 export interface BulkImportResult {

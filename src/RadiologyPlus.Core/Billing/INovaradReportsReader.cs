@@ -51,6 +51,14 @@ public interface INovaradReportsReader
     Task<ReportContent?> ReadReportFullAsync(
         long reportId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Every distinct Novarad <c>ris.orders.site_code</c> (the customer's full set of
+    /// billing sites, ~166), sorted. Backs the "show all sites" option in the crosswalk
+    /// facility-scoping picker so a code can be mapped at a site it hasn't appeared at yet.
+    /// </summary>
+    Task<IReadOnlyList<string>> ReadAllSiteCodesAsync(
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>

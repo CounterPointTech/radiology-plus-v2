@@ -2,11 +2,12 @@
 
 import { AxiosError } from "axios";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
+import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
 
 function safeNext(raw: string | null): string {
@@ -21,7 +22,9 @@ function safeNext(raw: string | null): string {
   return "/validation";
 }
 
-export default function LoginPage() {
+// useSearchParams() forces a client-side bailout, so the production build requires
+// it behind a Suspense boundary — LoginPage (the route entry) provides one.
+function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
   const { login, isAuthenticated, isHydrated } = useAuth();
@@ -152,5 +155,19 @@ export default function LoginPage() {
         </p>
       </div>
     </main>
+  );
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <main className="min-h-screen flex items-center justify-center">
+          <Spinner size={28} />
+        </main>
+      }
+    >
+      <LoginForm />
+    </Suspense>
   );
 }
