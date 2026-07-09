@@ -11,6 +11,7 @@ public enum AccessAction
     Execute = 7,
     NovaradWrite = 8,
     PermissionDenied = 9,
+    MModalWrite = 10,
 }
 
 public sealed record AccessLogEntry(

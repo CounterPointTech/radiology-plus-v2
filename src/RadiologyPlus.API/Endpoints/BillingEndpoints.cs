@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Npgsql;
@@ -43,6 +44,27 @@ public static class BillingEndpoints
         group.MapPut("/rvu/overrides/{code}", UpsertRvuOverrideAsync).WithName("BillingUpsertRvuOverride");
         group.MapDelete("/rvu/overrides/{code}", DeleteRvuOverrideAsync).WithName("BillingDeleteRvuOverride");
         group.MapGet("/cpt-master/cms-check", CptMasterCmsCheckAsync).WithName("BillingCptMasterCmsCheck");
+
+        // M*Modal connection settings (in-app provisioning)
+        group.MapGet("/rvu/sync/connection", GetConnectionAsync).WithName("BillingRvuConnectionGet");
+        group.MapPut("/rvu/sync/connection", SetConnectionAsync).WithName("BillingRvuConnectionSet");
+        group.MapPost("/rvu/sync/connection/test", TestRvuConnectionAsync).WithName("BillingRvuConnectionTest");
+        group.MapDelete("/rvu/sync/connection", DeleteConnectionAsync).WithName("BillingRvuConnectionDelete");
+
+        // M*Modal RVU write-back (project-ffi-rvu-writeback)
+        group.MapGet("/rvu/sync/status", RvuSyncStatusAsync).WithName("BillingRvuSyncStatus");
+        group.MapGet("/rvu/sync/issuers", ListRvuSyncIssuersAsync).WithName("BillingRvuSyncIssuers");
+        group.MapGet("/rvu/sync/runs", ListRvuSyncRunsAsync).WithName("BillingRvuSyncRuns");
+        group.MapPost("/rvu/sync/preview", PreviewRvuSyncAsync).WithName("BillingRvuSyncPreview");
+        group.MapPost("/rvu/sync", ApplyRvuSyncAsync).WithName("BillingRvuSyncApply");
+
+        // M*Modal RVU backups / restore points
+        group.MapPost("/rvu/sync/backup", BackupRvusAsync).WithName("BillingRvuBackup");
+        group.MapGet("/rvu/sync/snapshots", ListSnapshotsAsync).WithName("BillingRvuSnapshots");
+        group.MapPost("/rvu/sync/snapshots/{id:long}/restore", RestoreSnapshotAsync).WithName("BillingRvuRestore");
+        group.MapGet("/rvu/sync/snapshots/{id:long}/export", ExportSnapshotAsync).WithName("BillingRvuSnapshotExport");
+        group.MapPost("/rvu/sync/snapshots/import", ImportSnapshotAsync).WithName("BillingRvuSnapshotImport").DisableAntiforgery();
+        group.MapDelete("/rvu/sync/snapshots/{id:long}", DeleteSnapshotAsync).WithName("BillingRvuSnapshotDelete");
         group.MapGet("/reconciliation/preview", PreviewReconciliationAsync).WithName("BillingReconciliationPreview");
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
@@ -453,6 +475,411 @@ public static class BillingEndpoints
         var rows = await repo.ListRecentRvuImportsAsync(
             user.TenantId, Math.Clamp(limit ?? 25, 1, 200), ct);
         return Results.Ok(rows);
+    }
+
+    // ── M*Modal connection settings (in-app provisioning) ──────────────────
+
+    [Authorize]
+    private static async Task<IResult> GetConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        var info = await store.GetAsync(user.TenantId, ct);
+        return Results.Ok(new { configured = info is not null, connection = info });
+    }
+
+    [Authorize]
+    private static async Task<IResult> SetConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store,
+        [FromBody] MModalConnectionUpsert body, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        if (body is null) return Results.BadRequest(new { error = "Body required." });
+
+        var host = body.Host?.Trim() ?? "";
+        var database = string.IsNullOrWhiteSpace(body.Database) ? "ClinicalDataStore" : body.Database.Trim();
+        var username = body.Username?.Trim() ?? "";
+        if (host.Length == 0) return Results.BadRequest(new { error = "Host is required." });
+        if (username.Length == 0) return Results.BadRequest(new { error = "Username is required." });
+        var port = body.Port > 0 ? body.Port : 1433;
+
+        var existing = await store.GetAsync(user.TenantId, ct);
+        if (existing is null && string.IsNullOrEmpty(body.Password))
+            return Results.BadRequest(new { error = "A password is required to set up a new connection." });
+
+        await store.UpsertAsync(user.TenantId, new MModalConnectionUpsert(
+            host, port, database, username, body.Password,
+            body.UseSsl, body.TrustServerCert, body.IssuerKey), ct);
+
+        var saved = await store.GetAsync(user.TenantId, ct);
+        return Results.Ok(saved);
+    }
+
+    [Authorize]
+    private static async Task<IResult> TestRvuConnectionAsync(
+        ICurrentUser currentUser, IRvuWriteBackSink sink, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        var result = await sink.TestConnectionAsync(user.TenantId, ct);
+        return Results.Ok(result);
+    }
+
+    [Authorize]
+    private static async Task<IResult> DeleteConnectionAsync(
+        ICurrentUser currentUser, IMModalConnectionStore store, CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        return await store.DeleteAsync(user.TenantId, ct) ? Results.NoContent() : Results.NotFound();
+    }
+
+    // ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────
+
+    [Authorize]
+    private static async Task<IResult> RvuSyncStatusAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var configured = await sink.IsConfiguredAsync(user.TenantId, ct);
+        var lastRuns = await repo.ListRecentSyncRunsAsync(user.TenantId, 1, ct);
+        return Results.Ok(new { configured, lastRun = lastRuns.Count > 0 ? lastRuns[0] : null });
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListRvuSyncIssuersAsync(
+        ICurrentUser currentUser,
+        IRvuWriteBackSink sink,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var issuers = await sink.ListIssuersAsync(user.TenantId, ct);
+        return Results.Ok(issuers);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListRvuSyncRunsAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var rows = await repo.ListRecentSyncRunsAsync(
+            user.TenantId, Math.Clamp(limit ?? 10, 1, 100), ct);
+        return Results.Ok(rows);
+    }
+
+    [Authorize]
+    private static async Task<IResult> PreviewRvuSyncAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        [FromQuery] string? issuerKey,
+        [FromQuery] bool? allIssuers,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var resolvedYear = year ?? (short)DateTime.Now.Year;
+        var q = ResolveQuarter(quarter, out var qErr);
+        if (qErr is not null) return Results.BadRequest(new { error = qErr });
+        if (!TryResolveIssuerScope(issuerKey, allIssuers, out var scope, out var scopeErr))
+            return Results.BadRequest(new { error = scopeErr });
+
+        var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
+        var preview = await sink.PreviewAsync(user.TenantId, resolvedYear, q, scope, desired, ct);
+        return Results.Ok(preview);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ApplyRvuSyncAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        [FromQuery] short? year,
+        [FromQuery] string? quarter,
+        [FromQuery] string? issuerKey,
+        [FromQuery] bool? allIssuers,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var resolvedYear = year ?? (short)DateTime.Now.Year;
+        var q = ResolveQuarter(quarter, out var qErr);
+        if (qErr is not null) return Results.BadRequest(new { error = qErr });
+        if (!TryResolveIssuerScope(issuerKey, allIssuers, out var scope, out var scopeErr))
+            return Results.BadRequest(new { error = scopeErr });
+
+        var desired = await repo.GetEffectiveWorkRvusAsync(user.TenantId, resolvedYear, ct);
+
+        // Auto restore-point BEFORE the write, so a bad sync can always be reverted. Capture
+        // returns [] when the write-back isn't configured, so no snapshot is stored in that case.
+        var backup = await sink.CaptureCurrentRvusAsync(user.TenantId, scope, ct);
+        if (backup.Count > 0)
+            await repo.CreateSnapshotAsync(
+                user.TenantId, user.UserId, scope,
+                $"Auto before sync {resolvedYear}{q}", "auto_pre_apply", backup, ct);
+
+        var result = await sink.ApplyAsync(user.TenantId, resolvedYear, q, scope, desired, user.UserId, user.Username, ct);
+
+        if (!result.Configured)
+            return Results.BadRequest(new { error = "M*Modal write-back is not configured for this tenant." });
+
+        // Persist an audited run header for the (configured) attempt — success or failure.
+        await repo.RecordSyncRunAsync(
+            user.TenantId, user.UserId, resolvedYear, q, scope, dryRun: false,
+            result.Matched, result.Updated, result.Unchanged, result.Missing,
+            result.Success, result.Error, ct);
+
+        return Results.Ok(result);
+    }
+
+    // A/B/C/D quarter parse shared by the sync handlers; defaults to 'A'.
+    private static char ResolveQuarter(string? quarter, out string? error)
+    {
+        error = null;
+        var q = string.IsNullOrWhiteSpace(quarter) ? 'A' : char.ToUpperInvariant(quarter.Trim()[0]);
+        if (q is not ('A' or 'B' or 'C' or 'D'))
+            error = "quarter must be one of A, B, C, D (A=Jan, B=Apr, C=Jul, D=Oct).";
+        return q;
+    }
+
+    // Resolve the M*Modal issuer scope: exactly one of a specific issuerKey (one facility) or
+    // allIssuers=true (every facility — the warned power option). Neither is rejected so a
+    // caller can never accidentally hit all facilities by omitting the scope.
+    private static bool TryResolveIssuerScope(string? issuerKey, bool? allIssuers, out Guid? scope, out string? error)
+    {
+        scope = null;
+        error = null;
+        var all = allIssuers == true;
+        var hasKey = !string.IsNullOrWhiteSpace(issuerKey);
+
+        if (all && hasKey)
+        {
+            error = "Pass either issuerKey (one facility) or allIssuers=true, not both.";
+            return false;
+        }
+        if (all) return true;                 // scope stays null = all issuers
+        if (!hasKey)
+        {
+            error = "Specify issuerKey (one facility) or allIssuers=true.";
+            return false;
+        }
+        if (!Guid.TryParse(issuerKey, out var key))
+        {
+            error = "issuerKey must be a GUID.";
+            return false;
+        }
+        scope = key;
+        return true;
+    }
+
+    // ── M*Modal RVU backups / restore points ───────────────────────────────
+
+    [Authorize]
+    private static async Task<IResult> BackupRvusAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        [FromQuery] string? issuerKey,
+        [FromQuery] bool? allIssuers,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        if (!TryResolveIssuerScope(issuerKey, allIssuers, out var scope, out var scopeErr))
+            return Results.BadRequest(new { error = scopeErr });
+        if (!await sink.IsConfiguredAsync(user.TenantId, ct))
+            return Results.BadRequest(new { error = "M*Modal write-back is not configured for this tenant." });
+
+        var rows = await sink.CaptureCurrentRvusAsync(user.TenantId, scope, ct);
+        var snap = await repo.CreateSnapshotAsync(
+            user.TenantId, user.UserId, scope, "Manual backup", "manual", rows, ct);
+        return Results.Ok(snap);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ListSnapshotsAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        [FromQuery] int? limit,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        var snaps = await repo.ListSnapshotsAsync(user.TenantId, Math.Clamp(limit ?? 25, 1, 200), ct);
+        return Results.Ok(snaps);
+    }
+
+    [Authorize]
+    private static async Task<IResult> RestoreSnapshotAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        IRvuWriteBackSink sink,
+        long id,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var header = await repo.GetSnapshotAsync(user.TenantId, id, ct);
+        if (header is null) return Results.NotFound();
+        var rows = await repo.GetSnapshotRowsAsync(user.TenantId, id, ct);
+        var result = await sink.RestoreRvusAsync(user.TenantId, header.IssuerKey, rows, user.UserId, user.Username, ct);
+
+        if (!result.Configured)
+            return Results.BadRequest(new { error = "M*Modal write-back is not configured for this tenant." });
+        return Results.Ok(result);
+    }
+
+    [Authorize]
+    private static async Task<IResult> ExportSnapshotAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        long id,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var header = await repo.GetSnapshotAsync(user.TenantId, id, ct);
+        if (header is null) return Results.NotFound();
+        var rows = await repo.GetSnapshotRowsAsync(user.TenantId, id, ct);
+
+        var sb = new StringBuilder();
+        sb.Append("IssuerKey,Code,RelativeValueUnit\r\n");
+        foreach (var r in rows)
+            sb.Append(r.IssuerKey.ToString()).Append(',')
+              .Append(CsvField(r.Code)).Append(',')
+              .Append(r.Rvu?.ToString(CultureInfo.InvariantCulture) ?? "")
+              .Append("\r\n");
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        return Results.File(bytes, "text/csv", $"mmodal-rvu-backup-{id}.csv");
+    }
+
+    [Authorize]
+    private static async Task<IResult> ImportSnapshotAsync(
+        HttpRequest request,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        if (!request.HasFormContentType)
+            return Results.BadRequest(new { error = "multipart/form-data required" });
+
+        var form = await request.ReadFormAsync(ct);
+        var file = form.Files.GetFile("file") ?? (form.Files.Count > 0 ? form.Files[0] : null);
+        if (file is null || file.Length == 0)
+            return Results.BadRequest(new { error = "No file uploaded under field 'file'." });
+        if (file.Length > MaxRvuUploadBytes)
+            return Results.BadRequest(new { error = $"File exceeds the {MaxRvuUploadBytes / 1024 / 1024} MB cap." });
+
+        var rows = new List<RvuSnapshotRow>();
+        var seen = new HashSet<(Guid, string)>();
+        using (var reader = new StreamReader(file.OpenReadStream()))
+        {
+            string? line;
+            int lineNo = 0;
+            while ((line = await reader.ReadLineAsync(ct)) is not null)
+            {
+                lineNo++;
+                if (string.IsNullOrWhiteSpace(line)) continue;
+                var parts = ParseCsvLine(line);
+                if (lineNo == 1 && parts.Count > 0 &&
+                    parts[0].Trim().Equals("IssuerKey", StringComparison.OrdinalIgnoreCase))
+                    continue; // header row
+                if (parts.Count < 3)
+                    return Results.BadRequest(new { error = $"Line {lineNo}: expected IssuerKey,Code,RelativeValueUnit." });
+                if (!Guid.TryParse(parts[0].Trim(), out var issuer))
+                    return Results.BadRequest(new { error = $"Line {lineNo}: invalid IssuerKey '{parts[0]}'." });
+                var code = parts[1].Trim();
+                if (code.Length == 0)
+                    return Results.BadRequest(new { error = $"Line {lineNo}: empty Code." });
+                double? rvu = null;
+                var rvuRaw = parts[2].Trim();
+                if (rvuRaw.Length > 0)
+                {
+                    if (!double.TryParse(rvuRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out var v))
+                        return Results.BadRequest(new { error = $"Line {lineNo}: invalid RVU '{rvuRaw}'." });
+                    rvu = v;
+                }
+                if (seen.Add((issuer, code)))
+                    rows.Add(new RvuSnapshotRow(issuer, code, rvu));
+            }
+        }
+        if (rows.Count == 0)
+            return Results.BadRequest(new { error = "No data rows parsed from the CSV." });
+
+        // One issuer in the file -> record it as the snapshot's scope; mixed -> all (null).
+        var distinct = rows.Select(r => r.IssuerKey).Distinct().Take(2).Count();
+        Guid? scope = distinct == 1 ? rows[0].IssuerKey : null;
+        var snap = await repo.CreateSnapshotAsync(
+            user.TenantId, user.UserId, scope, $"Imported {file.FileName}", "import", rows, ct);
+        return Results.Ok(snap);
+    }
+
+    [Authorize]
+    private static async Task<IResult> DeleteSnapshotAsync(
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        long id,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+        return await repo.DeleteSnapshotAsync(user.TenantId, id, ct)
+            ? Results.NoContent()
+            : Results.NotFound();
+    }
+
+    // Minimal RFC-4180-ish CSV helpers for the backup export/import.
+    private static string CsvField(string v)
+    {
+        if (v.IndexOfAny([',', '"', '\n', '\r']) < 0) return v;
+        return "\"" + v.Replace("\"", "\"\"") + "\"";
+    }
+
+    private static List<string> ParseCsvLine(string line)
+    {
+        var fields = new List<string>();
+        var sb = new StringBuilder();
+        var inQuotes = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            var c = line[i];
+            if (inQuotes)
+            {
+                if (c == '"')
+                {
+                    if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; }
+                    else inQuotes = false;
+                }
+                else sb.Append(c);
+            }
+            else if (c == '"') inQuotes = true;
+            else if (c == ',') { fields.Add(sb.ToString()); sb.Clear(); }
+            else sb.Append(c);
+        }
+        fields.Add(sb.ToString());
+        return fields;
     }
 
     [Authorize]

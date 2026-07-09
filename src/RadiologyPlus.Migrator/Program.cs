@@ -31,6 +31,7 @@ try
         "create-nrs"    => await new CreateNrsCommand(connectionString).RunAsync(flags),
         "add-facility"  => await new AddFacilityCommand(connectionString).RunAsync(flags),
         "set-novarad-connection" => await new SetNovaradConnectionCommand(connectionString, config).RunAsync(flags),
+        "set-mmodal-connection" => await new SetMModalConnectionCommand(connectionString, config).RunAsync(flags),
         "help" or "--help" or "-h" or "/?" => PrintUsage(),
         _               => await new MigrationRunner(connectionString).RunAsync(),
     };
@@ -92,6 +93,18 @@ static int PrintUsage()
            [--use-ssl=true|false]
            [--audit-table=<base>]                                  dual-audit base table; writer appends _<year> (e.g. shared.audit)
             (Restart the API afterward — the connection pool caches per tenant.)
+
+          RadiologyPlus.Migrator set-mmodal-connection             Create or repoint a tenant's M*Modal
+            --tenant=<code>                                         ClinicalDataStore connection (RVU write-back target).
+            --host=<host>                                          Upsert: required on create, optional on update.
+           [--port=<1433>]
+           [--db=<ClinicalDataStore>]
+            --user=<user>
+            --password=<plaintext>                                 AES-GCM encrypted at rest (needs Encryption:Key)
+           [--use-ssl=true|false]                                   default: true (Encrypt=True)
+           [--trust-server-cert=true|false]                         default: true (self-signed certs)
+           [--issuer-key=<GUID>]                                    optional Clinical.Issuer scope; omit = all issuers
+            (No API restart needed — the sink reads the row per request.)
 
         Environment:
           RADPLUS_ConnectionStrings__AppDb           Postgres connection string for the Radiology Plus DB.

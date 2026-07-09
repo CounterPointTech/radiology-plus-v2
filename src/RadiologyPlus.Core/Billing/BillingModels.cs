@@ -106,6 +106,42 @@ public sealed record RvuImport(
     DateTimeOffset RanAt);
 
 /// <summary>
+/// Audit header for a single M*Modal RVU write-back run (mirror of <see cref="RvuImport"/>).
+/// <c>DryRun</c> = true rows are previews (no write). Counts: <c>MatchedRows</c> effective
+/// codes that exist in M*Modal, <c>UpdatedRows</c> whose RVU actually changed,
+/// <c>UnchangedRows</c> already equal, <c>MissingRows</c> with no active M*Modal row.
+/// </summary>
+public sealed record RvuSyncRun(
+    long SyncRunId,
+    short Year,
+    char Quarter,
+    Guid? IssuerKey,          // M*Modal issuer this run targeted; null = all issuers
+    bool DryRun,
+    int MatchedRows,
+    int UpdatedRows,
+    int UnchangedRows,
+    int MissingRows,
+    bool Success,
+    string? ErrorMessage,
+    Guid RanByUserId,
+    DateTimeOffset RanAt);
+
+/// <summary>
+/// Header for one M*Modal RVU backup (restore point). <see cref="IssuerKey"/> null = all
+/// issuers. <see cref="Source"/>: <c>auto_pre_apply</c> (captured before an Apply) |
+/// <c>manual</c> (Back up now) | <c>import</c> (loaded from a CSV). The captured values are
+/// <c>RvuSnapshotRow</c>s fetched separately.
+/// </summary>
+public sealed record RvuWriteBackSnapshot(
+    long SnapshotId,
+    Guid? IssuerKey,
+    string Label,
+    string Source,
+    int RowCount,
+    Guid CreatedByUserId,
+    DateTimeOffset CreatedAt);
+
+/// <summary>
 /// Write-shape for upserting a manual RVU override (the top layer of the
 /// rvu_overrides → rvu_values → cpt_codes precedence). <c>Code</c> may be a single
 /// HCPCS or a <c>;</c>-delimited bundle string — both resolve in the reconciliation

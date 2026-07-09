@@ -41,6 +41,75 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The tenant-wide effective work RVU for every single (non-bundle) HCPCS for a year,
+    /// taken from the same precedence overlay reconciliation credits against
+    /// (tenant override → CMS rvu_values, status 'A' &amp; work&gt;0 → Amber master). This is the
+    /// source the M*Modal write-back pushes. Bundles are excluded (M*Modal keys on a single
+    /// <c>[Code]</c>); site-specific overrides do not propagate (the target has no site
+    /// dimension). Read-only.
+    /// </summary>
+    Task<IReadOnlyList<RvuWriteBackEntry>> GetEffectiveWorkRvusAsync(
+        Guid tenantId,
+        short year,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Persist an M*Modal write-back run header (mirror of the import headers). Returns the row.</summary>
+    Task<RvuSyncRun> RecordSyncRunAsync(
+        Guid tenantId,
+        Guid runByUserId,
+        short year,
+        char quarter,
+        Guid? issuerKey,
+        bool dryRun,
+        int matchedRows,
+        int updatedRows,
+        int unchangedRows,
+        int missingRows,
+        bool success,
+        string? errorMessage,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Latest N M*Modal write-back run audit rows for a tenant.</summary>
+    Task<IReadOnlyList<RvuSyncRun>> ListRecentSyncRunsAsync(
+        Guid tenantId,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Persist an M*Modal RVU backup: a header + its captured rows (bulk). Returns the header.</summary>
+    Task<RvuWriteBackSnapshot> CreateSnapshotAsync(
+        Guid tenantId,
+        Guid userId,
+        Guid? issuerKey,
+        string label,
+        string source,
+        IReadOnlyList<RvuSnapshotRow> rows,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Latest N M*Modal backup headers for a tenant (newest first).</summary>
+    Task<IReadOnlyList<RvuWriteBackSnapshot>> ListSnapshotsAsync(
+        Guid tenantId,
+        int limit,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>A single backup header, or null if it doesn't belong to the tenant.</summary>
+    Task<RvuWriteBackSnapshot?> GetSnapshotAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The captured (issuer, code) → RVU rows of a backup (empty if none/not owned).</summary>
+    Task<IReadOnlyList<RvuSnapshotRow>> GetSnapshotRowsAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Delete a backup (+ its rows). Returns false when no such backup exists for the tenant.</summary>
+    Task<bool> DeleteSnapshotAsync(
+        Guid tenantId,
+        long snapshotId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Atomically insert a billing.rvu_imports header, bulk-upsert the parsed CMS
     /// PPRRVU rows into billing.rvu_values for (tenant, year, quarter), and update the
     /// header counts. Mirrors <see cref="ImportCptMasterAsync"/>. Returns the header.

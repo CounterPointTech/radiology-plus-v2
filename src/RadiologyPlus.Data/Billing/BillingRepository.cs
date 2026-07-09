@@ -872,6 +872,260 @@ public sealed class BillingRepository : IBillingRepository
     }
 
     // ========================================================================
+    // M*Modal RVU write-back (project-ffi-rvu-writeback)
+    // ========================================================================
+
+    public async Task<IReadOnlyList<RvuWriteBackEntry>> GetEffectiveWorkRvusAsync(
+        Guid tenantId, short year, CancellationToken cancellationToken = default)
+    {
+        // Reuse the exact reconciliation precedence overlay (tenant override -> CMS 'A' &
+        // work>0 -> Amber master) so the figures pushed to M*Modal equal what we credit.
+        // Bundles are excluded: the M*Modal target keys on a single [Code], so only
+        // singletons map. Site-specific overrides do not propagate (the target has no site
+        // dimension) — the master index already carries only tenant-wide overrides.
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+        var master = await LoadMasterForYearsAsync(conn, tx, tenantId, new[] { year }, cancellationToken);
+        await tx.RollbackAsync(cancellationToken);   // read-only; nothing to commit
+
+        return master.Singletons
+            .Where(kv => kv.Key.Year == year)
+            .Select(kv => new RvuWriteBackEntry(kv.Value.Code, kv.Value.WorkRvu))
+            .OrderBy(e => e.Hcpcs, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    public async Task<RvuSyncRun> RecordSyncRunAsync(
+        Guid tenantId, Guid runByUserId, short year, char quarter, Guid? issuerKey, bool dryRun,
+        int matchedRows, int updatedRows, int unchangedRows, int missingRows,
+        bool success, string? errorMessage, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            INSERT INTO billing.rvu_sync_runs
+                (tenant_id, year, quarter, issuer_key, dry_run, matched_rows, updated_rows,
+                 unchanged_rows, missing_rows, success, error_message, ran_by_user_id)
+            VALUES (@t, @year, @quarter, @issuer, @dry, @matched, @updated,
+                    @unchanged, @missing, @success, @error, @user)
+            RETURNING sync_run_id, ran_at
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("year", year);
+        cmd.Parameters.AddWithValue("quarter", quarter.ToString());
+        cmd.Parameters.Add(new NpgsqlParameter("issuer", NpgsqlDbType.Uuid) { Value = (object?)issuerKey ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("dry", dryRun);
+        cmd.Parameters.AddWithValue("matched", matchedRows);
+        cmd.Parameters.AddWithValue("updated", updatedRows);
+        cmd.Parameters.AddWithValue("unchanged", unchangedRows);
+        cmd.Parameters.AddWithValue("missing", missingRows);
+        cmd.Parameters.AddWithValue("success", success);
+        cmd.Parameters.Add(new NpgsqlParameter("error", NpgsqlDbType.Text) { Value = (object?)errorMessage ?? DBNull.Value });
+        cmd.Parameters.AddWithValue("user", runByUserId);
+
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        await reader.ReadAsync(cancellationToken);
+        return new RvuSyncRun(
+            SyncRunId: reader.GetInt64(0),
+            Year: year,
+            Quarter: quarter,
+            IssuerKey: issuerKey,
+            DryRun: dryRun,
+            MatchedRows: matchedRows,
+            UpdatedRows: updatedRows,
+            UnchangedRows: unchangedRows,
+            MissingRows: missingRows,
+            Success: success,
+            ErrorMessage: errorMessage,
+            RanByUserId: runByUserId,
+            RanAt: new DateTimeOffset(reader.GetDateTime(1), TimeSpan.Zero));
+    }
+
+    public async Task<IReadOnlyList<RvuSyncRun>> ListRecentSyncRunsAsync(
+        Guid tenantId, int limit, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT sync_run_id, year, quarter, issuer_key, dry_run, matched_rows, updated_rows,
+                   unchanged_rows, missing_rows, success, error_message, ran_by_user_id, ran_at
+            FROM billing.rvu_sync_runs
+            WHERE tenant_id = @t
+            ORDER BY ran_at DESC
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("limit", limit);
+
+        var result = new List<RvuSyncRun>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new RvuSyncRun(
+                SyncRunId: reader.GetInt64(0),
+                Year: reader.GetInt16(1),
+                Quarter: reader.GetString(2)[0],
+                IssuerKey: reader.IsDBNull(3) ? null : reader.GetGuid(3),
+                DryRun: reader.GetBoolean(4),
+                MatchedRows: reader.GetInt32(5),
+                UpdatedRows: reader.GetInt32(6),
+                UnchangedRows: reader.GetInt32(7),
+                MissingRows: reader.GetInt32(8),
+                Success: reader.GetBoolean(9),
+                ErrorMessage: reader.IsDBNull(10) ? null : reader.GetString(10),
+                RanByUserId: reader.GetGuid(11),
+                RanAt: new DateTimeOffset(reader.GetDateTime(12), TimeSpan.Zero)));
+        }
+        return result;
+    }
+
+    public async Task<RvuWriteBackSnapshot> CreateSnapshotAsync(
+        Guid tenantId, Guid userId, Guid? issuerKey, string label, string source,
+        IReadOnlyList<RvuSnapshotRow> rows, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(rows);
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var tx = await conn.BeginTransactionAsync(cancellationToken);
+
+        long snapshotId;
+        DateTimeOffset createdAt;
+        await using (var header = conn.CreateCommand())
+        {
+            header.Transaction = tx;
+            header.CommandText = """
+                INSERT INTO billing.rvu_writeback_snapshots
+                    (tenant_id, issuer_key, label, source, row_count, created_by_user_id)
+                VALUES (@t, @issuer, @label, @source, @count, @user)
+                RETURNING snapshot_id, created_at
+                """;
+            header.Parameters.AddWithValue("t", tenantId);
+            header.Parameters.Add(new NpgsqlParameter("issuer", NpgsqlDbType.Uuid) { Value = (object?)issuerKey ?? DBNull.Value });
+            header.Parameters.AddWithValue("label", label);
+            header.Parameters.AddWithValue("source", source);
+            header.Parameters.AddWithValue("count", rows.Count);
+            header.Parameters.AddWithValue("user", userId);
+            await using var r = await header.ExecuteReaderAsync(cancellationToken);
+            await r.ReadAsync(cancellationToken);
+            snapshotId = r.GetInt64(0);
+            createdAt = new DateTimeOffset(r.GetDateTime(1), TimeSpan.Zero);
+        }
+
+        if (rows.Count > 0)
+        {
+            var issuers = new Guid[rows.Count];
+            var codes = new string[rows.Count];
+            var rvus = new double?[rows.Count];
+            for (int i = 0; i < rows.Count; i++)
+            {
+                issuers[i] = rows[i].IssuerKey;
+                codes[i] = rows[i].Code;
+                rvus[i] = rows[i].Rvu;
+            }
+
+            await using var ins = conn.CreateCommand();
+            ins.Transaction = tx;
+            ins.CommandText = """
+                INSERT INTO billing.rvu_writeback_snapshot_rows
+                    (snapshot_id, tenant_id, issuer_key, code, relative_value_unit)
+                SELECT @sid, @t, u.issuer, u.code, u.rvu
+                FROM UNNEST(@issuers::uuid[], @codes::text[], @rvus::float8[]) AS u(issuer, code, rvu)
+                """;
+            ins.Parameters.AddWithValue("sid", snapshotId);
+            ins.Parameters.AddWithValue("t", tenantId);
+            ins.Parameters.Add(new NpgsqlParameter("issuers", NpgsqlDbType.Array | NpgsqlDbType.Uuid) { Value = issuers });
+            ins.Parameters.Add(new NpgsqlParameter("codes", NpgsqlDbType.Array | NpgsqlDbType.Text) { Value = codes });
+            ins.Parameters.Add(new NpgsqlParameter("rvus", NpgsqlDbType.Array | NpgsqlDbType.Double) { Value = rvus });
+            await ins.ExecuteNonQueryAsync(cancellationToken);
+        }
+
+        await tx.CommitAsync(cancellationToken);
+        return new RvuWriteBackSnapshot(snapshotId, issuerKey, label, source, rows.Count, userId, createdAt);
+    }
+
+    public async Task<IReadOnlyList<RvuWriteBackSnapshot>> ListSnapshotsAsync(
+        Guid tenantId, int limit, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT snapshot_id, issuer_key, label, source, row_count, created_by_user_id, created_at
+            FROM billing.rvu_writeback_snapshots
+            WHERE tenant_id = @t
+            ORDER BY created_at DESC
+            LIMIT @limit
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("limit", limit);
+
+        var result = new List<RvuWriteBackSnapshot>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+            result.Add(ReadSnapshotHeader(reader));
+        return result;
+    }
+
+    public async Task<RvuWriteBackSnapshot?> GetSnapshotAsync(
+        Guid tenantId, long snapshotId, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT snapshot_id, issuer_key, label, source, row_count, created_by_user_id, created_at
+            FROM billing.rvu_writeback_snapshots
+            WHERE tenant_id = @t AND snapshot_id = @id
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("id", snapshotId);
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadSnapshotHeader(reader) : null;
+    }
+
+    private static RvuWriteBackSnapshot ReadSnapshotHeader(NpgsqlDataReader r) => new(
+        SnapshotId: r.GetInt64(0),
+        IssuerKey: r.IsDBNull(1) ? null : r.GetGuid(1),
+        Label: r.GetString(2),
+        Source: r.GetString(3),
+        RowCount: r.GetInt32(4),
+        CreatedByUserId: r.GetGuid(5),
+        CreatedAt: new DateTimeOffset(r.GetDateTime(6), TimeSpan.Zero));
+
+    public async Task<IReadOnlyList<RvuSnapshotRow>> GetSnapshotRowsAsync(
+        Guid tenantId, long snapshotId, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            SELECT issuer_key, code, relative_value_unit
+            FROM billing.rvu_writeback_snapshot_rows
+            WHERE tenant_id = @t AND snapshot_id = @id
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("id", snapshotId);
+
+        var result = new List<RvuSnapshotRow>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            result.Add(new RvuSnapshotRow(
+                IssuerKey: reader.GetGuid(0),
+                Code: reader.GetString(1),
+                Rvu: reader.IsDBNull(2) ? null : reader.GetDouble(2)));
+        }
+        return result;
+    }
+
+    public async Task<bool> DeleteSnapshotAsync(
+        Guid tenantId, long snapshotId, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM billing.rvu_writeback_snapshots WHERE tenant_id = @t AND snapshot_id = @id";
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("id", snapshotId);
+        return await cmd.ExecuteNonQueryAsync(cancellationToken) > 0;
+    }
+
+    // ========================================================================
     // Reconciliation
     // ========================================================================
 

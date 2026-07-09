@@ -70,7 +70,8 @@ builder.Services.AddScoped<IFfiComparisonSink, NoOpFfiComparisonSink>();
 builder.Services.AddScoped<IBillingRepository, BillingRepository>();
 builder.Services.AddSingleton<ICptMasterImporter, CptMasterImporter>();
 builder.Services.AddSingleton<IRvuValuesImporter, RvuValuesImporter>();          // item 1.2 — CMS PPRRVU parser (stateless)
-builder.Services.AddScoped<IRvuWriteBackSink, NoOpRvuWriteBackSink>();            // item 1.2 — M*Modal write-back stub (TODO(MModal-rvu-writeback))
+builder.Services.AddScoped<IRvuWriteBackSink, MModalRvuWriteBackSink>();          // M*Modal RVU write-back (self-gates on tenancy.mmodal_connections; NoOpRvuWriteBackSink is the hard-off alternative)
+builder.Services.AddScoped<IMModalConnectionStore, MModalConnectionStore>();       // M*Modal connection settings (in-app provisioning)
 builder.Services.AddScoped<INovaradReportsReader, NovaradReportsReader>();
 builder.Services.AddSingleton<IReconciliationExporter, ReconciliationExporter>();
 

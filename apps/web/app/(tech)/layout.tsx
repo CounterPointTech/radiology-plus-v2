@@ -66,6 +66,7 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
                   label="Admin"
                   items={[
                     { href: "/admin/status-banner", label: "Status banner" },
+                    { href: "/admin/mmodal-connection", label: "M*Modal connection" },
                     { href: "/templates", label: "Reason templates" },
                   ]}
                 />

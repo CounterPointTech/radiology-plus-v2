@@ -168,6 +168,126 @@ export interface RvuImport {
   ranAt: string;
 }
 
+// ── M*Modal RVU write-back (project-ffi-rvu-writeback) ──────────────────────
+
+// One M*Modal issuer (facility) that owns exam codes. isDefault marks the connection's
+// pinned issuer (the UI preselects it).
+export interface MModalIssuer {
+  issuerKey: string;
+  name: string;
+  description: string | null;
+  activeCodeCount: number;
+  isDefault: boolean;
+}
+
+// One code's diff vs what M*Modal currently stores. action: "update" (RVU differs —
+// will be written) | "unchanged" (already equal) | "missing" (no active M*Modal row).
+export interface RvuSyncDiff {
+  hcpcs: string;
+  currentRvu: number | null;
+  newRvu: number;
+  matchedRows: number;
+  action: "update" | "unchanged" | "missing";
+}
+
+export interface RvuSyncPreview {
+  configured: boolean;
+  year: number;
+  quarter: RvuQuarter;
+  total: number;
+  updatable: number;
+  unchanged: number;
+  missing: number;
+  diffs: RvuSyncDiff[];
+}
+
+export interface RvuSyncResult {
+  configured: boolean;
+  year: number;
+  quarter: RvuQuarter;
+  matched: number;
+  updated: number;
+  unchanged: number;
+  missing: number;
+  success: boolean;
+  error: string | null;
+  ranAt: string;
+}
+
+export interface RvuSyncRun {
+  syncRunId: number;
+  year: number;
+  quarter: RvuQuarter;
+  issuerKey: string | null; // null = all issuers
+  dryRun: boolean;
+  matchedRows: number;
+  updatedRows: number;
+  unchangedRows: number;
+  missingRows: number;
+  success: boolean;
+  errorMessage: string | null;
+  ranByUserId: string;
+  ranAt: string;
+}
+
+export interface RvuSyncStatus {
+  configured: boolean;
+  lastRun: RvuSyncRun | null;
+}
+
+// A tenant's M*Modal connection config (password redacted to hasPassword).
+export interface MModalConnectionInfo {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  useSsl: boolean;
+  trustServerCert: boolean;
+  issuerKey: string | null;
+  hasPassword: boolean;
+  updatedAt: string;
+}
+
+// Write-shape for the connection settings form. password omitted/null = keep existing.
+export interface MModalConnectionRequest {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password?: string | null;
+  useSsl: boolean;
+  trustServerCert: boolean;
+  issuerKey?: string | null;
+}
+
+export interface RvuConnectionTest {
+  configured: boolean;
+  ok: boolean;
+  issuerCount: number;
+  error: string | null;
+}
+
+// A backup (restore point) of M*Modal RVU values. issuerKey null = all issuers.
+export interface RvuWriteBackSnapshot {
+  snapshotId: number;
+  issuerKey: string | null;
+  label: string;
+  source: "auto_pre_apply" | "manual" | "import";
+  rowCount: number;
+  createdByUserId: string;
+  createdAt: string;
+}
+
+export interface RvuRestoreResult {
+  configured: boolean;
+  restored: number;
+  unchanged: number;
+  missing: number;
+  success: boolean;
+  error: string | null;
+  ranAt: string;
+}
+
 export interface RvuOverride {
   overrideId: number;
   year: number;
