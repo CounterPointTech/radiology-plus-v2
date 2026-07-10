@@ -41,14 +41,14 @@ public sealed class ScriptRepository : IScriptRepository
     }
 
     public async Task<long> CreateExecutionAsync(Guid scriptId, Guid tenantId, string triggeredBy, Guid? userId,
-        IReadOnlyDictionary<string, object?>? parameters, CancellationToken cancellationToken = default)
+        IReadOnlyDictionary<string, object?>? parameters, long? chainRunId = null, CancellationToken cancellationToken = default)
     {
         await using var conn = (NpgsqlConnection)await _db.OpenUnscopedAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             INSERT INTO scripting.executions
-                (script_id, tenant_id, triggered_by, triggered_by_user, status, parameters_used)
-            VALUES (@s, @t, @tb, @u, 'pending', @p::jsonb)
+                (script_id, tenant_id, triggered_by, triggered_by_user, status, parameters_used, chain_run_id)
+            VALUES (@s, @t, @tb, @u, 'pending', @p::jsonb, @cr)
             RETURNING execution_id
             """;
         cmd.Parameters.AddWithValue("s", scriptId);
@@ -56,6 +56,7 @@ public sealed class ScriptRepository : IScriptRepository
         cmd.Parameters.AddWithValue("tb", triggeredBy);
         cmd.Parameters.Add(new NpgsqlParameter("u", NpgsqlDbType.Uuid) { Value = (object?)userId ?? DBNull.Value });
         cmd.Parameters.AddWithValue("p", parameters is null ? "{}" : JsonSerializer.Serialize(parameters));
+        cmd.Parameters.Add(new NpgsqlParameter("cr", NpgsqlDbType.Bigint) { Value = (object?)chainRunId ?? DBNull.Value });
         return (long)(await cmd.ExecuteScalarAsync(cancellationToken))!;
     }
 

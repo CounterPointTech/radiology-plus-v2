@@ -32,7 +32,7 @@ public interface IScriptRepository
 {
     Task<ScriptRecord?> GetAsync(Guid scriptId, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<ScriptRecord>> ListActiveAsync(CancellationToken cancellationToken = default);
-    Task<long> CreateExecutionAsync(Guid scriptId, Guid tenantId, string triggeredBy, Guid? userId, IReadOnlyDictionary<string, object?>? parameters, CancellationToken cancellationToken = default);
+    Task<long> CreateExecutionAsync(Guid scriptId, Guid tenantId, string triggeredBy, Guid? userId, IReadOnlyDictionary<string, object?>? parameters, long? chainRunId = null, CancellationToken cancellationToken = default);
     Task UpdateExecutionAsync(long executionId, ScriptExecutionResult result, CancellationToken cancellationToken = default);
     Task MarkRunningAsync(long executionId, CancellationToken cancellationToken = default);
 }

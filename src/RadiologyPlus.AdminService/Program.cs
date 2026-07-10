@@ -48,7 +48,10 @@ try
     builder.Services.AddSingleton<IAppDbContext, AppDbContext>();
     builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
     builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolver>();
+    builder.Services.AddSingleton<IScriptChainRepository, ScriptChainRepository>();
+    builder.Services.AddSingleton<IChainFailureNotifier, ChainFailureNotifier>();
     builder.Services.AddSingleton<INotificationRepository, NotificationRepository>();
+    builder.Services.AddSingleton<INotificationAdminRepository, NotificationAdminRepository>();
     builder.Services.AddSingleton<IGraphEmailSettingsStore, GraphEmailSettingsStore>();
 
     // Scripting + notifications

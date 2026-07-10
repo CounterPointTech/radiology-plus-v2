@@ -39,6 +39,7 @@ public sealed class ScriptExecutionEngine : IDisposable
         Guid? triggeredByUser = null,
         IReadOnlyDictionary<string, object?>? parameterOverrides = null,
         string? connectionString = null,
+        long? chainRunId = null,
         CancellationToken cancellationToken = default)
     {
         var script = await _scripts.GetAsync(scriptId, cancellationToken)
@@ -48,14 +49,17 @@ public sealed class ScriptExecutionEngine : IDisposable
             throw new InvalidOperationException($"Script {scriptId} is not active.");
 
         var merged = MergeParameters(script.Parameters, parameterOverrides);
-        var executionId = await _scripts.CreateExecutionAsync(scriptId, script.TenantId, triggeredBy, triggeredByUser, merged, cancellationToken);
+        var executionId = await _scripts.CreateExecutionAsync(scriptId, script.TenantId, triggeredBy, triggeredByUser, merged, chainRunId, cancellationToken);
 
         var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         _running[executionId] = cts;
 
-        await _semaphore.WaitAsync(cts.Token);
+        var acquired = false;
         try
         {
+            await _semaphore.WaitAsync(cts.Token);
+            acquired = true;
+
             await _scripts.MarkRunningAsync(executionId, cts.Token);
             _logger.LogInformation("Executing script {Script} (execution {Execution}) for tenant {Tenant}.",
                 script.Name, executionId, script.TenantId);
@@ -82,7 +86,7 @@ public sealed class ScriptExecutionEngine : IDisposable
                         Error = ex.Message,
                         DurationMs = 0,
                     };
-                    await _scripts.UpdateExecutionAsync(executionId, failed, cts.Token);
+                    await _scripts.UpdateExecutionAsync(executionId, failed, CancellationToken.None);
                     return new ScriptExecutionRecord(
                         executionId, script.ScriptId, script.TenantId, triggeredBy, triggeredByUser,
                         failed.Status, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
@@ -100,7 +104,10 @@ public sealed class ScriptExecutionEngine : IDisposable
                 MaxResultRows: 100);
 
             var result = await executor.ExecuteAsync(invocation, cts.Token);
-            await _scripts.UpdateExecutionAsync(executionId, result, cts.Token);
+            // Final-state writes NEVER use cts.Token: when the run was cancelled the
+            // executor returns a Cancelled result, but the token is already cancelled
+            // and would abort the write — leaving the row stuck at 'running'.
+            await _scripts.UpdateExecutionAsync(executionId, result, CancellationToken.None);
 
             return new ScriptExecutionRecord(
                 executionId, script.ScriptId, script.TenantId, triggeredBy, triggeredByUser,
@@ -108,9 +115,24 @@ public sealed class ScriptExecutionEngine : IDisposable
                 (int)result.DurationMs, result.ExitCode, result.Output, result.Error,
                 result.RowsAffected, merged);
         }
+        catch (OperationCanceledException)
+        {
+            // Cancelled outside the executor's own handling (queued at the semaphore,
+            // marking running, or resolving the connection) — persist the cancellation
+            // so the row can't sit at 'pending'/'running' forever.
+            var cancelled = new ScriptExecutionResult
+            {
+                Success = false,
+                Status = ScriptExecutionStatus.Cancelled,
+                Message = "Cancelled",
+                DurationMs = 0,
+            };
+            await _scripts.UpdateExecutionAsync(executionId, cancelled, CancellationToken.None);
+            throw;
+        }
         finally
         {
-            _semaphore.Release();
+            if (acquired) _semaphore.Release();
             _running.TryRemove(executionId, out _);
             cts.Dispose();
         }

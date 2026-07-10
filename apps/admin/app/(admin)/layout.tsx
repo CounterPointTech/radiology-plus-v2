@@ -9,6 +9,7 @@ import {
   ShieldAlert,
   Terminal,
   Users,
+  Workflow,
 } from "lucide-react";
 import type { Route } from "next";
 import Link from "next/link";
@@ -32,6 +33,7 @@ interface NavEntry {
 
 const NAV: NavEntry[] = [
   { href: "/scripts", label: "Script Manager", icon: Terminal, nrsOnly: true },
+  { href: "/chains", label: "Script Chains", icon: Workflow, nrsOnly: true },
   { href: "/notifications", label: "Notifications", icon: BellRing },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/facilities", label: "Facilities", icon: Building2 },
