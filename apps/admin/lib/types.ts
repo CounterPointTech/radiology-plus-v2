@@ -197,7 +197,154 @@ export interface ScriptCancelResult {
   message: string;
 }
 
-export interface NotificationsStatus {
-  scaffold: boolean;
+// ---------------------------------------------------------------------------
+// Notifications console
+// ---------------------------------------------------------------------------
+
+export type NotificationChannelToken = "email" | "teams" | "sms" | "webhook";
+export type NotificationStatusToken =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "cancelled";
+
+export const NOTIFICATION_CHANNELS: NotificationChannelToken[] = [
+  "email",
+  "teams",
+  "sms",
+  "webhook",
+];
+
+export const NOTIFICATION_STATUSES: NotificationStatusToken[] = [
+  "pending",
+  "sending",
+  "sent",
+  "failed",
+  "cancelled",
+];
+
+export const CHANNEL_LABEL: Record<NotificationChannelToken, string> = {
+  email: "Email",
+  teams: "Teams",
+  sms: "SMS",
+  webhook: "Webhook",
+};
+
+/** Channels with a live sender today; the rest queue but fail delivery. */
+export const LIVE_CHANNELS: NotificationChannelToken[] = ["email"];
+
+export interface NotificationQueueItem {
+  notificationId: number;
+  templateId: string | null;
+  templateName: string | null;
+  channel: NotificationChannelToken;
+  recipient: string;
+  subject: string | null;
+  priority: number;
+  status: NotificationStatusToken;
+  retryCount: number;
+  maxRetries: number;
+  scheduledAt: string;
+  sentAt: string | null;
+  failedAt: string | null;
+  lastError: string | null;
+  sourceType: string | null;
+  sourceId: string | null;
+  createdAt: string;
+}
+
+export interface NotificationQueueDetail extends NotificationQueueItem {
+  body: string;
+  isHtml: boolean;
+}
+
+export interface NotificationQueuePage {
+  items: NotificationQueueItem[];
+  total: number;
+}
+
+export interface NotificationQueueActionResult {
+  changed: boolean;
+  item: NotificationQueueDetail;
   message: string;
+}
+
+export interface NotificationChannelCount {
+  channel: NotificationChannelToken;
+  count: number;
+}
+
+export interface NotificationStats {
+  pending: number;
+  sending: number;
+  sent24h: number;
+  failed: number;
+  oldestPendingAt: string | null;
+  byChannel24h: NotificationChannelCount[];
+}
+
+export interface NotificationComposeRequest {
+  channel?: NotificationChannelToken;
+  recipient: string;
+  subject?: string | null;
+  body?: string | null;
+  isHtml: boolean;
+  priority?: number;
+  templateId?: string | null;
+  variables?: Record<string, unknown> | null;
+}
+
+export interface NotificationTemplateSummary {
+  templateId: string;
+  name: string;
+  channel: NotificationChannelToken;
+  isHtml: boolean;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface NotificationTemplateDetail extends NotificationTemplateSummary {
+  subjectTemplate: string | null;
+  bodyTemplate: string;
+}
+
+export interface NotificationTemplateSaveRequest {
+  name: string;
+  channel: NotificationChannelToken;
+  subjectTemplate?: string | null;
+  bodyTemplate: string;
+  isHtml: boolean;
+  isActive: boolean;
+}
+
+export interface TemplatePreviewResult {
+  subject: string | null;
+  body: string;
+}
+
+export interface GraphEmailSettings {
+  graphTenantId: string;
+  clientId: string;
+  hasClientSecret: boolean;
+  fromAddress: string;
+  updatedAt: string;
+}
+
+export interface GraphEmailSettingsResponse {
+  configured: boolean;
+  settings: GraphEmailSettings | null;
+}
+
+export interface GraphEmailSettingsSaveRequest {
+  graphTenantId: string;
+  clientId: string;
+  clientSecret?: string | null;
+  fromAddress: string;
+}
+
+export interface GraphTestResult {
+  ok: boolean;
+  error: string | null;
+  sentTestEmail: boolean;
 }

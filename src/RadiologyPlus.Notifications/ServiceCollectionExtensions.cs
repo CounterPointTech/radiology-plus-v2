@@ -14,7 +14,10 @@ public static class ServiceCollectionExtensions
         services.Configure<GraphEmailOptions>(configuration.GetSection("Notifications:GraphEmail"));
 
         // Register channels. Override these in tests or when a tenant uses a different provider.
-        services.AddSingleton<INotificationChannelSender, GraphEmailChannel>();
+        // GraphEmailChannel is also exposed concretely so the settings endpoint can run
+        // a credentials test through the same send path.
+        services.AddSingleton<GraphEmailChannel>();
+        services.AddSingleton<INotificationChannelSender>(sp => sp.GetRequiredService<GraphEmailChannel>());
         // Teams + SMS deferred to Phase 4 — add LogOnly as a permanent dev fallback if Graph not configured.
         services.AddHttpClient();
 
