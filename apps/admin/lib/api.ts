@@ -1,6 +1,12 @@
 import { get, post } from "./api-client";
 import { apiClient } from "./api-client";
 import type {
+  ChainCancelResult,
+  ChainDetail,
+  ChainRunDetail,
+  ChainRunInfo,
+  ChainSaveRequest,
+  ChainSummary,
   GraphEmailSettingsResponse,
   GraphEmailSettingsSaveRequest,
   GraphTestResult,
@@ -37,6 +43,53 @@ export const adminApi = {
   /** Runs an inline SELECT 1 through the real script executor (NRS only). */
   runScriptSmokeTest() {
     return post<ScriptSmokeTestResult>("/scripts/test");
+  },
+};
+
+/** Script Chains (NRS only, enforced server-side). */
+export const chainsApi = {
+  list() {
+    return get<ChainSummary[]>("/chains/");
+  },
+  get(chainId: string) {
+    return get<ChainDetail>(`/chains/${encodeURIComponent(chainId)}`);
+  },
+  create(body: ChainSaveRequest) {
+    return post<ChainDetail>("/chains/", body);
+  },
+  async update(chainId: string, body: ChainSaveRequest) {
+    const res = await apiClient.put<ChainDetail>(
+      `/chains/${encodeURIComponent(chainId)}`,
+      body,
+    );
+    return res.data;
+  },
+  async remove(chainId: string) {
+    await apiClient.delete(`/chains/${encodeURIComponent(chainId)}`);
+  },
+  async setActive(chainId: string, isActive: boolean) {
+    const res = await apiClient.patch<ChainDetail>(
+      `/chains/${encodeURIComponent(chainId)}/active`,
+      { isActive },
+    );
+    return res.data;
+  },
+  run(chainId: string) {
+    return post<{ started: boolean; chainRunId: number }>(
+      `/chains/${encodeURIComponent(chainId)}/run`,
+    );
+  },
+  recentRuns(params?: { limit?: number }) {
+    return get<ChainRunInfo[]>("/chains/runs", params);
+  },
+  runsFor(chainId: string, params?: { limit?: number }) {
+    return get<ChainRunInfo[]>(`/chains/${encodeURIComponent(chainId)}/runs`, params);
+  },
+  runDetail(chainRunId: number) {
+    return get<ChainRunDetail>(`/chains/runs/${chainRunId}`);
+  },
+  cancelRun(chainRunId: number) {
+    return post<ChainCancelResult>(`/chains/runs/${chainRunId}/cancel`);
   },
 };
 

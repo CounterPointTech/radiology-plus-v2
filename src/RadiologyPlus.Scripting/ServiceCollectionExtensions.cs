@@ -18,6 +18,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IScriptConnectionResolver>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ScriptExecutionEngine>>(),
             maxConcurrent));
+        // Hosts must also register IScriptChainRepository + IChainFailureNotifier (Data layer).
+        services.AddSingleton<ChainRunner>();
         return services;
     }
 }

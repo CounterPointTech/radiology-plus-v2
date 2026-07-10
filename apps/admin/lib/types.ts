@@ -198,6 +198,107 @@ export interface ScriptCancelResult {
 }
 
 // ---------------------------------------------------------------------------
+// Script chains
+// ---------------------------------------------------------------------------
+
+export type ChainOnFailure = "stop" | "continue";
+/** Chain runs share the script run-status tokens. */
+export type ChainRunStatus = ScriptRunStatus;
+
+export interface ChainSummary {
+  chainId: string;
+  name: string;
+  description: string | null;
+  onFailure: ChainOnFailure;
+  cronExpression: string | null;
+  nextRunAt: string | null;
+  isActive: boolean;
+  stepCount: number;
+  notifiesOnFailure: boolean;
+  createdAt: string;
+  lastRunId: number | null;
+  lastRunStatus: ChainRunStatus | null;
+  lastRunStartedAt: string | null;
+  lastRunDurationMs: number | null;
+}
+
+export interface ChainStep {
+  stepOrder: number;
+  scriptId: string;
+  scriptName: string;
+  language: ScriptLanguageToken;
+  scriptIsActive: boolean;
+  continueOnFailure: boolean;
+}
+
+export interface ChainDetail {
+  chainId: string;
+  name: string;
+  description: string | null;
+  onFailure: ChainOnFailure;
+  cronExpression: string | null;
+  nextRunAt: string | null;
+  isActive: boolean;
+  notifyOnFailureRecipient: string | null;
+  notifyOnFailureTemplateId: string | null;
+  createdAt: string;
+  steps: ChainStep[];
+}
+
+export interface ChainStepSaveRequest {
+  scriptId: string;
+  continueOnFailure: boolean;
+}
+
+export interface ChainSaveRequest {
+  name: string;
+  description?: string | null;
+  onFailure: ChainOnFailure;
+  cronExpression?: string | null;
+  isActive: boolean;
+  notifyOnFailureRecipient?: string | null;
+  notifyOnFailureTemplateId?: string | null;
+  steps: ChainStepSaveRequest[];
+}
+
+export interface ChainRunInfo {
+  chainRunId: number;
+  chainId: string;
+  chainName: string;
+  triggeredBy: string;
+  status: ChainRunStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  stepsTotal: number;
+  stepsSucceeded: number;
+  stepsFailed: number;
+  errorSummary: string | null;
+  createdAt: string;
+}
+
+export interface ChainRunStep {
+  executionId: number;
+  scriptId: string;
+  scriptName: string;
+  status: ScriptRunStatus;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  rowsAffected: number | null;
+}
+
+export interface ChainRunDetail {
+  run: ChainRunInfo;
+  steps: ChainRunStep[];
+}
+
+export interface ChainCancelResult {
+  cancelled: boolean;
+  message: string;
+}
+
+// ---------------------------------------------------------------------------
 // Notifications console
 // ---------------------------------------------------------------------------
 

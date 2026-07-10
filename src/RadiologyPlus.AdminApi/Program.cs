@@ -57,10 +57,13 @@ builder.Services.AddNovaradFederatedAuth(builder.Configuration);
 builder.Services.AddScoped<IAccessAuditWriter, AccessAuditWriter>();
 
 // Scripting — the engine + executors power manual runs and the smoke test;
-// the admin repository backs the Script Manager CRUD/history surfaces.
+// the admin repositories back the Script Manager + Chains CRUD/history surfaces.
 builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
 builder.Services.AddSingleton<IScriptAdminRepository, ScriptAdminRepository>();
 builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolver>();
+builder.Services.AddSingleton<IScriptChainRepository, ScriptChainRepository>();
+builder.Services.AddSingleton<IChainAdminRepository, ChainAdminRepository>();
+builder.Services.AddSingleton<IChainFailureNotifier, ChainFailureNotifier>();
 builder.Services.AddRadiologyPlusScripting(
     maxConcurrent: builder.Configuration.GetValue<int?>("Service:MaxConcurrentScripts") ?? 2);
 
@@ -125,6 +128,7 @@ app.MapHealthChecks("/health");
 app.MapAuthEndpoints();
 app.MapDiagnosticsEndpoints();
 app.MapScriptsEndpoints();
+app.MapChainsEndpoints();
 app.MapNotificationsEndpoints();
 
 await app.RunAsync();
