@@ -17,7 +17,7 @@ public sealed class ScriptRepository : IScriptRepository
         await using var conn = (NpgsqlConnection)await _db.OpenUnscopedAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT script_id, tenant_id, name, language, body, cron_expression, is_active, timeout_seconds, parameters_json
+            SELECT script_id, tenant_id, name, language, body, cron_expression, is_active, timeout_seconds, parameters_json, connection_target
             FROM scripting.scripts WHERE script_id = @id
             """;
         cmd.Parameters.AddWithValue("id", scriptId);
@@ -31,7 +31,7 @@ public sealed class ScriptRepository : IScriptRepository
         await using var conn = (NpgsqlConnection)await _db.OpenUnscopedAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = """
-            SELECT script_id, tenant_id, name, language, body, cron_expression, is_active, timeout_seconds, parameters_json
+            SELECT script_id, tenant_id, name, language, body, cron_expression, is_active, timeout_seconds, parameters_json, connection_target
             FROM scripting.scripts WHERE is_active
             """;
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -125,6 +125,7 @@ public sealed class ScriptRepository : IScriptRepository
             CronExpression: r.IsDBNull(5) ? null : r.GetString(5),
             IsActive: r.GetBoolean(6),
             TimeoutSeconds: r.GetInt32(7),
-            Parameters: parameters);
+            Parameters: parameters,
+            ConnectionTarget: r.GetString(9));
     }
 }

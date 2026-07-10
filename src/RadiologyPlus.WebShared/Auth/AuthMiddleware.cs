@@ -1,8 +1,11 @@
 using System.Security.Claims;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using RadiologyPlus.Core.Identity;
 using RadiologyPlus.Core.Tenancy;
 
-namespace RadiologyPlus.API.Auth;
+namespace RadiologyPlus.WebShared.Auth;
 
 /// <summary>
 /// After ASP.NET Core authentication populates HttpContext.User from the JWT, this

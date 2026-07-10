@@ -2,7 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Authorization;
-using RadiologyPlus.API.Auth;
+using RadiologyPlus.WebShared.Auth;
 using RadiologyPlus.Common.Security;
 using RadiologyPlus.Core.Audit;
 using RadiologyPlus.Core.Identity;

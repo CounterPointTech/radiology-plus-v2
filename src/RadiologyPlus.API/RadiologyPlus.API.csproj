@@ -23,5 +23,6 @@
     <ProjectReference Include="..\RadiologyPlus.Common\RadiologyPlus.Common.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Scripting\RadiologyPlus.Scripting.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Notifications\RadiologyPlus.Notifications.csproj" />
+    <ProjectReference Include="..\RadiologyPlus.WebShared\RadiologyPlus.WebShared.csproj" />
   </ItemGroup>
 </Project>

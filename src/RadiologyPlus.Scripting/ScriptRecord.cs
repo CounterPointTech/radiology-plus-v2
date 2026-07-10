@@ -9,7 +9,8 @@ public sealed record ScriptRecord(
     string? CronExpression,
     bool IsActive,
     int TimeoutSeconds,
-    IReadOnlyDictionary<string, object?>? Parameters);
+    IReadOnlyDictionary<string, object?>? Parameters,
+    string ConnectionTarget);
 
 public sealed record ScriptExecutionRecord(
     long ExecutionId,

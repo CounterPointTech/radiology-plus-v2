@@ -2,7 +2,6 @@ using System.Globalization;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
-using RadiologyPlus.API.Auth;
 using RadiologyPlus.API.Endpoints;
 using RadiologyPlus.Common.Encryption;
 using RadiologyPlus.Common.Security;
@@ -22,6 +21,7 @@ using RadiologyPlus.Data.Identity;
 using RadiologyPlus.Data.Tenancy;
 using RadiologyPlus.Data.TechValidation;
 using RadiologyPlus.NovaradAuth;
+using RadiologyPlus.WebShared.Auth;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);

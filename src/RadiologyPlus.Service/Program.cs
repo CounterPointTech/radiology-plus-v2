@@ -10,12 +10,8 @@ using RadiologyPlus.Core.Tenancy;
 using RadiologyPlus.Data.Audit;
 using RadiologyPlus.Data.Connections;
 using RadiologyPlus.Data.Identity;
-using RadiologyPlus.Data.Notifications;
-using RadiologyPlus.Data.Scripting;
 using RadiologyPlus.Data.Tenancy;
 using RadiologyPlus.Data.TechValidation;
-using RadiologyPlus.Notifications;
-using RadiologyPlus.Scripting;
 using RadiologyPlus.Service.TechValidation;
 using RadiologyPlus.Service.Workers;
 using Serilog;
@@ -54,8 +50,6 @@ try
     // Data layer
     builder.Services.AddSingleton<IAppDbContext, AppDbContext>();
     builder.Services.AddSingleton<INovaradDbContext, NovaradConnectionPool>();
-    builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
-    builder.Services.AddSingleton<INotificationRepository, NotificationRepository>();
 
     // Tenants / identity (needed by Tech Validation projector for the per-tenant loop)
     builder.Services.AddScoped<TenantRepository>();
@@ -70,14 +64,8 @@ try
     builder.Services.AddScoped<INovaradStudyReader, NovaradStudyReader>();
     builder.Services.AddScoped<IDoTheDoOrchestrator, DoTheDoOrchestrator>();
 
-    // Scripting + notifications
-    builder.Services.AddRadiologyPlusScripting(
-        maxConcurrent: builder.Configuration.GetValue<int?>("Service:MaxConcurrentScripts") ?? 5);
-    builder.Services.AddRadiologyPlusNotifications(builder.Configuration);
-
-    // Hosted services
-    builder.Services.AddHostedService<ScriptScheduler>();
-    builder.Services.AddNotificationOrchestratorHostedService();
+    // Hosted services — clinical only. ScriptScheduler + NotificationOrchestrator
+    // moved to RadiologyPlus.AdminService (the technical/clinical split).
     builder.Services.AddHostedService<ReadyStudiesProjector>();
     builder.Services.AddHostedService<HeartbeatWorker>();
 

@@ -15,6 +15,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new ScriptExecutionEngine(
             sp.GetRequiredService<ScriptExecutorFactory>(),
             sp.GetRequiredService<IScriptRepository>(),
+            sp.GetRequiredService<IScriptConnectionResolver>(),
             sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<ScriptExecutionEngine>>(),
             maxConcurrent));
         return services;

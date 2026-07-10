@@ -77,19 +77,10 @@ public sealed class ScriptScheduler : BackgroundService
         {
             if (string.IsNullOrWhiteSpace(script.CronExpression)) continue;
 
-            CronExpression cron;
-            try
+            if (!CronHelper.TryParse(script.CronExpression, out var cron) || cron is null)
             {
-                cron = CronExpression.Parse(script.CronExpression, CronFormat.IncludeSeconds);
-            }
-            catch (CronFormatException)
-            {
-                try { cron = CronExpression.Parse(script.CronExpression); }
-                catch (CronFormatException ex)
-                {
-                    _logger.LogWarning(ex, "Invalid cron '{Cron}' on script {Script}.", script.CronExpression, script.ScriptId);
-                    continue;
-                }
+                _logger.LogWarning("Invalid cron '{Cron}' on script {Script}.", script.CronExpression, script.ScriptId);
+                continue;
             }
 
             var occurrences = cron.GetOccurrences(lastTick.UtcDateTime, now.UtcDateTime, TimeZoneInfo.Utc, fromInclusive: false, toInclusive: true);
@@ -98,7 +89,9 @@ public sealed class ScriptScheduler : BackgroundService
             try
             {
                 _logger.LogInformation("Cron match for {Script}; invoking.", script.Name);
-                await _engine.RunAsync(script.ScriptId, $"schedule:{script.CronExpression}", null, null, null, cancellationToken);
+                // triggered_by must be one of the check-constraint tokens
+                // ('schedule'|'manual'|'chain'|'event') — the cron itself is on the script row.
+                await _engine.RunAsync(script.ScriptId, "schedule", null, null, null, cancellationToken);
             }
             catch (InvalidOperationException ex)
             {

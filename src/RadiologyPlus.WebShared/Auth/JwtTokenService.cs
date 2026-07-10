@@ -6,7 +6,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using RadiologyPlus.Core.Identity;
 
-namespace RadiologyPlus.API.Auth;
+namespace RadiologyPlus.WebShared.Auth;
 
 public sealed class JwtOptions
 {

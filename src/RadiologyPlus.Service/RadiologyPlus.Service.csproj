@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
   <PropertyGroup>
     <RootNamespace>RadiologyPlus.Service</RootNamespace>
-    <Description>Worker host running MonitoringEngine, ScriptScheduler, NotificationOrchestrator.</Description>
+    <Description>Clinical worker host running ReadyStudiesProjector and HeartbeatWorker.</Description>
     <UserSecretsId>radiology-plus-service-7f3c4a2e-8b1d-4e6f-9a5c-2d8e9f0a1b3c</UserSecretsId>
     <OutputType>exe</OutputType>
   </PropertyGroup>
@@ -22,8 +22,6 @@
     <ProjectReference Include="..\RadiologyPlus.Core\RadiologyPlus.Core.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Data\RadiologyPlus.Data.csproj" />
     <ProjectReference Include="..\RadiologyPlus.Common\RadiologyPlus.Common.csproj" />
-    <ProjectReference Include="..\RadiologyPlus.Scripting\RadiologyPlus.Scripting.csproj" />
-    <ProjectReference Include="..\RadiologyPlus.Notifications\RadiologyPlus.Notifications.csproj" />
   </ItemGroup>
   <ItemGroup>
     <None Update="appsettings.json">
