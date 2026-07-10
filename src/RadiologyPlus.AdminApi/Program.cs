@@ -16,6 +16,7 @@ using RadiologyPlus.Data.Notifications;
 using RadiologyPlus.Data.Scripting;
 using RadiologyPlus.Data.Tenancy;
 using RadiologyPlus.Notifications;
+using RadiologyPlus.Notifications.Channels;
 using RadiologyPlus.NovaradAuth;
 using RadiologyPlus.Scripting;
 using RadiologyPlus.WebShared.Auth;
@@ -63,8 +64,13 @@ builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolve
 builder.Services.AddRadiologyPlusScripting(
     maxConcurrent: builder.Configuration.GetValue<int?>("Service:MaxConcurrentScripts") ?? 2);
 
-// Notifications (repository only for now; the orchestrator runs in RadiologyPlus.AdminService)
+// Notifications — queue/template management, compose, and the Graph settings surface.
+// The orchestrator (actual sending) runs in RadiologyPlus.AdminService; this host only
+// needs the service (queue/render), the channel (settings test), and the admin repo.
 builder.Services.AddSingleton<INotificationRepository, NotificationRepository>();
+builder.Services.AddSingleton<INotificationAdminRepository, NotificationAdminRepository>();
+builder.Services.AddSingleton<IGraphEmailSettingsStore, GraphEmailSettingsStore>();
+builder.Services.AddRadiologyPlusNotifications(builder.Configuration);
 
 // JWT
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();

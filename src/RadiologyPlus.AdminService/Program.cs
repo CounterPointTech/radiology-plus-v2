@@ -9,6 +9,7 @@ using RadiologyPlus.Data.Connections;
 using RadiologyPlus.Data.Notifications;
 using RadiologyPlus.Data.Scripting;
 using RadiologyPlus.Notifications;
+using RadiologyPlus.Notifications.Channels;
 using RadiologyPlus.Scripting;
 using Serilog;
 
@@ -48,6 +49,7 @@ try
     builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
     builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolver>();
     builder.Services.AddSingleton<INotificationRepository, NotificationRepository>();
+    builder.Services.AddSingleton<IGraphEmailSettingsStore, GraphEmailSettingsStore>();
 
     // Scripting + notifications
     builder.Services.AddRadiologyPlusScripting(

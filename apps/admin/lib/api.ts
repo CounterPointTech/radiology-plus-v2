@@ -1,7 +1,19 @@
 import { get, post } from "./api-client";
 import { apiClient } from "./api-client";
 import type {
-  NotificationsStatus,
+  GraphEmailSettingsResponse,
+  GraphEmailSettingsSaveRequest,
+  GraphTestResult,
+  NotificationChannelToken,
+  NotificationComposeRequest,
+  NotificationQueueActionResult,
+  NotificationQueueDetail,
+  NotificationQueuePage,
+  NotificationStats,
+  NotificationStatusToken,
+  NotificationTemplateDetail,
+  NotificationTemplateSaveRequest,
+  NotificationTemplateSummary,
   ScriptCancelResult,
   ScriptDetail,
   ScriptExecutionDetail,
@@ -11,6 +23,7 @@ import type {
   ScriptSummary,
   ScriptVersionDetail,
   ScriptVersionInfo,
+  TemplatePreviewResult,
   VersionInfo,
 } from "./types";
 
@@ -25,10 +38,91 @@ export const adminApi = {
   runScriptSmokeTest() {
     return post<ScriptSmokeTestResult>("/scripts/test");
   },
+};
 
-  /** Notifications scaffold status (NRS/Admin). */
-  notificationsStatus() {
-    return get<NotificationsStatus>("/notifications/status");
+/** Notifications console (NRS/Admin, enforced server-side). */
+export const notificationsApi = {
+  stats() {
+    return get<NotificationStats>("/notifications/stats");
+  },
+  queue(params?: {
+    status?: NotificationStatusToken;
+    channel?: NotificationChannelToken;
+    limit?: number;
+    offset?: number;
+  }) {
+    return get<NotificationQueuePage>("/notifications/queue", params);
+  },
+  queueItem(notificationId: number) {
+    return get<NotificationQueueDetail>(`/notifications/queue/${notificationId}`);
+  },
+  cancel(notificationId: number) {
+    return post<NotificationQueueActionResult>(
+      `/notifications/queue/${notificationId}/cancel`,
+    );
+  },
+  retry(notificationId: number) {
+    return post<NotificationQueueActionResult>(
+      `/notifications/queue/${notificationId}/retry`,
+    );
+  },
+  compose(body: NotificationComposeRequest) {
+    return post<NotificationQueueDetail>("/notifications/compose", body);
+  },
+
+  templates() {
+    return get<NotificationTemplateSummary[]>("/notifications/templates");
+  },
+  template(templateId: string) {
+    return get<NotificationTemplateDetail>(
+      `/notifications/templates/${encodeURIComponent(templateId)}`,
+    );
+  },
+  createTemplate(body: NotificationTemplateSaveRequest) {
+    return post<NotificationTemplateDetail>("/notifications/templates", body);
+  },
+  async updateTemplate(templateId: string, body: NotificationTemplateSaveRequest) {
+    const res = await apiClient.put<NotificationTemplateDetail>(
+      `/notifications/templates/${encodeURIComponent(templateId)}`,
+      body,
+    );
+    return res.data;
+  },
+  async setTemplateActive(templateId: string, isActive: boolean) {
+    const res = await apiClient.patch<NotificationTemplateDetail>(
+      `/notifications/templates/${encodeURIComponent(templateId)}/active`,
+      { isActive },
+    );
+    return res.data;
+  },
+  async deleteTemplate(templateId: string) {
+    await apiClient.delete(`/notifications/templates/${encodeURIComponent(templateId)}`);
+  },
+  previewTemplate(body: {
+    subjectTemplate?: string | null;
+    bodyTemplate: string;
+    variables?: Record<string, unknown> | null;
+  }) {
+    return post<TemplatePreviewResult>("/notifications/templates/preview", body);
+  },
+
+  graphSettings() {
+    return get<GraphEmailSettingsResponse>("/notifications/settings/graph");
+  },
+  async saveGraphSettings(body: GraphEmailSettingsSaveRequest) {
+    const res = await apiClient.put<GraphEmailSettingsResponse>(
+      "/notifications/settings/graph",
+      body,
+    );
+    return res.data;
+  },
+  async deleteGraphSettings() {
+    await apiClient.delete("/notifications/settings/graph");
+  },
+  testGraphSettings(recipient?: string | null) {
+    return post<GraphTestResult>("/notifications/settings/graph/test", {
+      recipient: recipient ?? null,
+    });
   },
 };
 
