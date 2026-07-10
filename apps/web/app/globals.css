@@ -1,17 +1,19 @@
 @import "tailwindcss";
 
-/* Radiology Plus design tokens — distinct identity, NovaRad-friendly */
+/* Radiology Plus design tokens — distinct identity, NovaRad-friendly.
+   Light is the approved default; dark is opt-in, stamped by the theme toggle
+   via [data-theme="dark"] (localStorage) — never by OS preference. */
 @theme {
-  --color-base-bg: oklch(0.13 0.02 250);
-  --color-base-fg: oklch(0.95 0.02 250);
-  --color-surface: oklch(0.18 0.025 250);
-  --color-surface-2: oklch(0.22 0.03 250);
-  --color-border: oklch(0.28 0.03 250);
-  --color-muted-fg: oklch(0.68 0.02 250);
+  --color-base-bg: oklch(0.98 0.01 250);
+  --color-base-fg: oklch(0.18 0.02 250);
+  --color-surface: oklch(0.96 0.01 250);
+  --color-surface-2: oklch(0.93 0.015 250);
+  --color-border: oklch(0.88 0.02 250);
+  --color-muted-fg: oklch(0.45 0.02 250);
 
   /* Signature accent: teal-leaning blue */
   --color-accent: oklch(0.72 0.13 210);
-  --color-accent-fg: oklch(0.15 0.03 210);
+  --color-accent-fg: oklch(0.97 0.01 210);
 
   /* Warm caution */
   --color-caution: oklch(0.74 0.18 25);
@@ -29,25 +31,33 @@
 }
 
 :root {
-  color-scheme: dark light;
+  color-scheme: light;
 }
 
-@media (prefers-color-scheme: light) {
-  @theme {
-    --color-base-bg: oklch(0.98 0.01 250);
-    --color-base-fg: oklch(0.18 0.02 250);
-    --color-surface: oklch(0.96 0.01 250);
-    --color-surface-2: oklch(0.93 0.015 250);
-    --color-border: oklch(0.88 0.02 250);
-    --color-muted-fg: oklch(0.45 0.02 250);
-    --color-accent-fg: oklch(0.97 0.01 210);
-  }
+/* Dark mode — the same design under dark tokens; an addition, not a redesign. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --color-base-bg: oklch(0.13 0.02 250);
+  --color-base-fg: oklch(0.95 0.02 250);
+  --color-surface: oklch(0.18 0.025 250);
+  --color-surface-2: oklch(0.22 0.03 250);
+  --color-border: oklch(0.28 0.03 250);
+  --color-muted-fg: oklch(0.68 0.02 250);
+  --color-accent-fg: oklch(0.15 0.03 210);
+  --color-novarad-red: oklch(0.58 0.20 25);
 }
 
 html, body {
   background: var(--color-base-bg);
   color: var(--color-base-fg);
   font-family: var(--font-sans);
+}
+
+/* Smooth theme swap: color-related properties cross-fade. */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: background-color 300ms ease, border-color 300ms ease, color 300ms ease !important;
 }
 
 @media (prefers-reduced-motion: reduce) {

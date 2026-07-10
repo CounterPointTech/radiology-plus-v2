@@ -7,6 +7,7 @@ import { useEffect } from "react";
 
 import { NavDropdown, NavLink } from "@/components/nav-dropdown";
 import { StatusBanner } from "@/components/status-banner";
+import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
@@ -75,6 +76,7 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
           </div>
 
           <div className="flex items-center gap-3">
+            <ThemeToggle />
             <div className="hidden sm:flex flex-col items-end leading-tight">
               <span className="text-sm font-medium">
                 {user.displayName ?? user.username}
