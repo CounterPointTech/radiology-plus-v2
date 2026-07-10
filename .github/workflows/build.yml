@@ -3,8 +3,8 @@ name: build
 on:
   push:
     branches: [main]
+  # No base-branch filter: stacked PRs (e.g. feature-on-feature) get checks too.
   pull_request:
-    branches: [main]
 
 jobs:
   dotnet:
