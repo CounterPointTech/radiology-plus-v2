@@ -14,6 +14,7 @@ public sealed class ScriptExecutionEngine : IDisposable
 
     private readonly ScriptExecutorFactory _executors;
     private readonly IScriptRepository _scripts;
+    private readonly IScriptConnectionResolver _connections;
     private readonly ILogger<ScriptExecutionEngine> _logger;
     private readonly SemaphoreSlim _semaphore;
     private readonly ConcurrentDictionary<long, CancellationTokenSource> _running = new();
@@ -21,11 +22,13 @@ public sealed class ScriptExecutionEngine : IDisposable
     public ScriptExecutionEngine(
         ScriptExecutorFactory executors,
         IScriptRepository scripts,
+        IScriptConnectionResolver connections,
         ILogger<ScriptExecutionEngine> logger,
         int maxConcurrent = 5)
     {
         _executors = executors;
         _scripts = scripts;
+        _connections = connections;
         _logger = logger;
         _semaphore = new SemaphoreSlim(Math.Max(1, maxConcurrent));
     }
@@ -57,12 +60,42 @@ public sealed class ScriptExecutionEngine : IDisposable
             _logger.LogInformation("Executing script {Script} (execution {Execution}) for tenant {Tenant}.",
                 script.Name, executionId, script.TenantId);
 
+            // No explicit override -> resolve from the script's connection_target
+            // (appdb | novarad | mmodal | none). A missing tenant connection is a
+            // clean failed execution, not a stuck 'running' row.
+            var effectiveConnection = connectionString;
+            if (effectiveConnection is null)
+            {
+                try
+                {
+                    effectiveConnection = await _connections.ResolveAsync(script.TenantId, script.ConnectionTarget, cts.Token);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    _logger.LogWarning(ex, "Connection resolution failed for script {Script} (execution {Execution}).",
+                        script.ScriptId, executionId);
+                    var failed = new ScriptExecutionResult
+                    {
+                        Success = false,
+                        Status = ScriptExecutionStatus.Failed,
+                        Message = ex.Message,
+                        Error = ex.Message,
+                        DurationMs = 0,
+                    };
+                    await _scripts.UpdateExecutionAsync(executionId, failed, cts.Token);
+                    return new ScriptExecutionRecord(
+                        executionId, script.ScriptId, script.TenantId, triggeredBy, triggeredByUser,
+                        failed.Status, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow,
+                        0, null, null, failed.Error, null, merged);
+                }
+            }
+
             var executor = _executors.Get(script.Language);
             var invocation = new ScriptInvocation(
                 Body: script.Body,
                 Language: script.Language,
                 Parameters: merged,
-                ConnectionString: connectionString,
+                ConnectionString: effectiveConnection,
                 TimeoutSeconds: script.TimeoutSeconds,
                 MaxResultRows: 100);
 

@@ -46,6 +46,7 @@ try
     // Data layer
     builder.Services.AddSingleton<IAppDbContext, AppDbContext>();
     builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
+    builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolver>();
     builder.Services.AddSingleton<INotificationRepository, NotificationRepository>();
 
     // Scripting + notifications

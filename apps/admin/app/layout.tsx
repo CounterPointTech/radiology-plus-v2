@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 
 import { Providers } from "./providers";
 import "./globals.css";
@@ -21,11 +21,9 @@ const jetbrains = JetBrains_Mono({
   display: "swap",
 });
 
-const fraunces = Fraunces({
-  subsets: ["latin"],
-  variable: "--font-display-loaded",
-  display: "swap",
-});
+// Applied before paint so a stored light preference never flashes dark (and
+// vice versa). Dark is the default when nothing is stored.
+const themeInit = `try{if(localStorage.getItem("radplus.admin.theme")==="light")document.documentElement.dataset.theme="light"}catch(e){}`;
 
 export default function RootLayout({
   children,
@@ -34,8 +32,11 @@ export default function RootLayout({
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${inter.variable} ${jetbrains.variable} ${fraunces.variable}`}
+      className={`${inter.variable} ${jetbrains.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+      </head>
       <body>
         <Providers>{children}</Providers>
       </body>

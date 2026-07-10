@@ -55,8 +55,11 @@ builder.Services.AddScoped<IIdentityRepository, IdentityRepository>();
 builder.Services.AddNovaradFederatedAuth(builder.Configuration);
 builder.Services.AddScoped<IAccessAuditWriter, AccessAuditWriter>();
 
-// Scripting (the engine + executors back the /scripts smoke test; CRUD comes later)
+// Scripting — the engine + executors power manual runs and the smoke test;
+// the admin repository backs the Script Manager CRUD/history surfaces.
 builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
+builder.Services.AddSingleton<IScriptAdminRepository, ScriptAdminRepository>();
+builder.Services.AddSingleton<IScriptConnectionResolver, ScriptConnectionResolver>();
 builder.Services.AddRadiologyPlusScripting(
     maxConcurrent: builder.Configuration.GetValue<int?>("Service:MaxConcurrentScripts") ?? 2);
 
