@@ -5,6 +5,7 @@ import {
   BellRing,
   Building2,
   LogOut,
+  ScrollText,
   Settings,
   ShieldAlert,
   Terminal,
@@ -37,6 +38,7 @@ const NAV: NavEntry[] = [
   { href: "/notifications", label: "Notifications", icon: BellRing },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/facilities", label: "Facilities", icon: Building2 },
+  { href: "/admin/audit", label: "Audit Log", icon: ScrollText },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
 

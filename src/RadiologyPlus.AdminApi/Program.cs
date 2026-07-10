@@ -56,6 +56,13 @@ builder.Services.AddScoped<IIdentityRepository, IdentityRepository>();
 builder.Services.AddNovaradFederatedAuth(builder.Configuration);
 builder.Services.AddScoped<IAccessAuditWriter, AccessAuditWriter>();
 
+// Admin pages: users/facilities/settings/audit management surfaces.
+builder.Services.AddSingleton<IUserAdminRepository, UserAdminRepository>();
+builder.Services.AddSingleton<IFacilityAdminRepository, FacilityAdminRepository>();
+builder.Services.AddSingleton<INovaradFacilityReader, NovaradFacilityReader>();
+builder.Services.AddSingleton<INovaradConnectionStore, NovaradConnectionStore>();
+builder.Services.AddSingleton<IAccessAuditReader, AccessAuditReader>();
+
 // Scripting — the engine + executors power manual runs and the smoke test;
 // the admin repositories back the Script Manager + Chains CRUD/history surfaces.
 builder.Services.AddSingleton<IScriptRepository, ScriptRepository>();
@@ -130,5 +137,9 @@ app.MapDiagnosticsEndpoints();
 app.MapScriptsEndpoints();
 app.MapChainsEndpoints();
 app.MapNotificationsEndpoints();
+app.MapUsersEndpoints();
+app.MapFacilitiesEndpoints();
+app.MapTenantSettingsEndpoints();
+app.MapAuditEndpoints();
 
 await app.RunAsync();

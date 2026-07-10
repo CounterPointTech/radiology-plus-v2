@@ -85,6 +85,16 @@ public sealed class NovaradConnectionPool : INovaradDbContext, IAsyncDisposable
         return new NpgsqlDataSourceBuilder(builder.ConnectionString).Build();
     }
 
+    public void InvalidateTenant(Guid tenantId)
+    {
+        if (_sources.TryRemove(tenantId, out var source) && source is not null)
+        {
+            // Existing checked-out connections finish on the old source; new opens rebuild.
+            _ = source.DisposeAsync().AsTask();
+            _logger.LogInformation("Invalidated cached Novarad data source for tenant {TenantId}.", tenantId);
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         foreach (var src in _sources.Values)
