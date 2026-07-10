@@ -198,6 +198,157 @@ export interface ScriptCancelResult {
 }
 
 // ---------------------------------------------------------------------------
+// Admin pages: users / facilities / settings / audit
+// ---------------------------------------------------------------------------
+
+export const ROLES: Role[] = ["NRS", "Admin", "Tech", "Radiologist"];
+
+export interface AdminUser {
+  userId: string;
+  username: string;
+  displayName: string;
+  email: string | null;
+  role: Role;
+  isLocal: boolean;
+  isActive: boolean;
+  lastLoginAt: string | null;
+  createdAt: string;
+  facilityIds: number[];
+  activeSessionCount: number;
+}
+
+export interface UserCreateRequest {
+  username: string;
+  displayName: string;
+  email?: string | null;
+  role: Role;
+  password: string;
+  facilityIds: number[];
+}
+
+export interface UserUpdateRequest {
+  displayName: string;
+  email?: string | null;
+  role: Role;
+  facilityIds: number[];
+}
+
+export interface UserSession {
+  tokenId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface FacilityAdmin {
+  facilityId: number;
+  novaradFacilityId: number;
+  code: string;
+  displayName: string;
+  isActive: boolean;
+  createdAt: string;
+  userCount: number;
+}
+
+export interface FacilitySaveRequest {
+  novaradFacilityId: number;
+  code: string;
+  displayName: string;
+  isActive: boolean;
+}
+
+export interface FacilityImportResult {
+  inserted: number;
+  updated: number;
+  total: number;
+}
+
+export interface TenantInfo {
+  code: string;
+  displayName: string;
+  isActive: boolean;
+}
+
+export interface NovaradConnection {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  useSsl: boolean;
+  novaradAuditTable: string;
+  notes: string | null;
+  hasPassword: boolean;
+  updatedAt: string;
+}
+
+export interface NovaradConnectionResponse {
+  configured: boolean;
+  settings: NovaradConnection | null;
+}
+
+export interface NovaradConnectionSaveRequest {
+  host: string;
+  port: number;
+  database: string;
+  username: string;
+  password?: string | null;
+  useSsl: boolean;
+  novaradAuditTable?: string | null;
+  notes?: string | null;
+}
+
+export interface NovaradTestResult {
+  ok: boolean;
+  durationMs: number;
+  serverVersion: string | null;
+  error: string | null;
+}
+
+export type AuditActionToken =
+  | "Login"
+  | "Logout"
+  | "Read"
+  | "Create"
+  | "Update"
+  | "Delete"
+  | "Execute"
+  | "NovaradWrite"
+  | "PermissionDenied"
+  | "MModalWrite";
+
+export const AUDIT_ACTIONS: AuditActionToken[] = [
+  "Login",
+  "Logout",
+  "Read",
+  "Create",
+  "Update",
+  "Delete",
+  "Execute",
+  "NovaradWrite",
+  "PermissionDenied",
+  "MModalWrite",
+];
+
+export interface AuditLogItem {
+  logId: number;
+  userId: string | null;
+  username: string | null;
+  action: AuditActionToken;
+  resourceType: string;
+  resourceId: string | null;
+  success: boolean;
+  ipAddress: string | null;
+  userAgent: string | null;
+  errorMessage: string | null;
+  metadataJson: string | null;
+  occurredAt: string;
+}
+
+export interface AuditLogPage {
+  items: AuditLogItem[];
+  total: number;
+}
+
+// ---------------------------------------------------------------------------
 // Script chains
 // ---------------------------------------------------------------------------
 

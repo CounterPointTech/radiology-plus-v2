@@ -79,6 +79,12 @@ public static class AuthEndpoints
         {
             return Results.Problem("Failed to load federated user after upsert.");
         }
+        // Valid Novarad credentials are not enough — an admin-deactivated account stays blocked.
+        if (!cached.IsActive)
+        {
+            await audit.WriteFailureAsync(tenant.TenantId, req.Username, AccessAction.Login, "Account is deactivated", http, ct);
+            return Results.Unauthorized();
+        }
         return await IssueTokensAsync(cached, tenant.TenantId, identity, jwt, audit, http, ct);
     }
 

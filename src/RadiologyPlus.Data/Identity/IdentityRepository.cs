@@ -76,7 +76,8 @@ public sealed class IdentityRepository : IIdentityRepository
                     display_name = EXCLUDED.display_name,
                     email = EXCLUDED.email,
                     role = EXCLUDED.role,
-                    is_active = TRUE,
+                    -- is_active is admin-controlled: a deactivated federated user must
+                    -- STAY deactivated — a successful Novarad login must not unblock them.
                     updated_at = NOW()
                 RETURNING user_id
                 """;

@@ -12,4 +12,11 @@ public interface INovaradDbContext
 {
     /// <summary>Open a read connection to the current tenant's Novarad.</summary>
     Task<IDbConnection> OpenAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Drop any cached data source for the tenant so the next open re-reads
+    /// tenancy.novarad_connections. Call after the connection settings change —
+    /// otherwise the pool keeps using the old credentials until restart.
+    /// </summary>
+    void InvalidateTenant(Guid tenantId);
 }
