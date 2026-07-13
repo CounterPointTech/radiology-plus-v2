@@ -27,6 +27,10 @@ const fraunces = Fraunces({
   display: "swap",
 });
 
+// Applied before paint so a stored dark preference never flashes light (and
+// vice versa). Light is the default when nothing is stored.
+const themeInit = `try{if(localStorage.getItem("radplus.theme")==="dark")document.documentElement.dataset.theme="dark"}catch(e){}`;
+
 export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
@@ -36,6 +40,9 @@ export default function RootLayout({
       suppressHydrationWarning
       className={`${inter.variable} ${jetbrains.variable} ${fraunces.variable}`}
     >
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInit }} />
+      </head>
       <body>
         <Providers>{children}</Providers>
       </body>
