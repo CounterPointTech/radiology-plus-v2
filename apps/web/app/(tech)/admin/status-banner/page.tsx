@@ -2,8 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Check, Pencil, X } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
 import { BannerView } from "@/components/status-banner";
 import { Badge } from "@/components/ui/badge";
@@ -55,16 +54,8 @@ const EMPTY = {
 };
 
 export default function StatusBannerAdminPage() {
-  const router = useRouter();
   const { user, isHydrated } = useAuth();
   const queryClient = useQueryClient();
-
-  // Belt-and-suspenders client gate (the server also gates every write on CanAccessAdmin).
-  useEffect(() => {
-    if (isHydrated && user && !canAccessAdmin(user.role)) {
-      router.replace("/validation");
-    }
-  }, [isHydrated, user, router]);
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY });

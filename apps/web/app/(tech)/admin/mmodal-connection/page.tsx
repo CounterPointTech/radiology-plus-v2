@@ -1,23 +1,11 @@
 "use client";
 
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
-
 import { MModalConnectionCard } from "@/components/billing/mmodal-connection-card";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
-import { canAccessAdmin } from "@/lib/types";
 
 export default function MModalConnectionAdminPage() {
-  const router = useRouter();
   const { user, isHydrated } = useAuth();
-
-  // Belt-and-suspenders client gate (the server also gates every endpoint on NRS/Admin).
-  useEffect(() => {
-    if (isHydrated && user && !canAccessAdmin(user.role)) {
-      router.replace("/validation");
-    }
-  }, [isHydrated, user, router]);
 
   if (!isHydrated || !user) {
     return (

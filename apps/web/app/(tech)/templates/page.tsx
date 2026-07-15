@@ -12,7 +12,7 @@ import { Input, Label, Textarea } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { techApi } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { canManageTemplates, type TechNotesTemplate } from "@/lib/types";
+import { type TechNotesTemplate } from "@/lib/types";
 
 interface FormState {
   label: string;
@@ -81,16 +81,6 @@ export default function TemplatesPage() {
       setConfirmDelete(null);
     },
   });
-
-  if (user && !canManageTemplates(user.role)) {
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <p className="text-sm text-[color:var(--color-muted-fg)]">
-          You don&apos;t have access to manage reason templates.
-        </p>
-      </div>
-    );
-  }
 
   const templates = templatesQuery.data ?? [];
   const canSave = form.label.trim().length > 0 && form.body.trim().length > 0;

@@ -10,8 +10,7 @@ import {
   Info,
   Play,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useState } from "react";
 
 import { ReportView } from "@/components/billing/report-view";
 import { Badge } from "@/components/ui/badge";
@@ -20,7 +19,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { billingApi } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
-  canAccessBilling,
   type ReconciliationDetailRow,
   type ReconciliationFacilitySummary,
   type ReconciliationLineItem,
@@ -63,7 +61,6 @@ function dateInputToInstant(value: string): string {
 }
 
 export default function ReconciliationPage() {
-  const router = useRouter();
   const { user, isHydrated } = useAuth();
 
   const defaults = useMemo(currentMonthBounds, []);
@@ -71,12 +68,6 @@ export default function ReconciliationPage() {
   const [to, setTo] = useState(defaults.to);
   const [site, setSite] = useState("");
   const [run, setRun] = useState<ReconciliationRun | null>(null);
-
-  useEffect(() => {
-    if (isHydrated && user && !canAccessBilling(user.role)) {
-      router.replace("/validation");
-    }
-  }, [isHydrated, user, router]);
 
   const runMutation = useMutation({
     mutationFn: () =>
