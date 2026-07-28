@@ -66,6 +66,12 @@ apiClient.interceptors.response.use(
     const original = error.config as
       | (InternalAxiosRequestConfig & { _retried?: boolean })
       | undefined;
+    // A server Forbid means the signed-in role lacks the capability. Give the
+    // page's error rendering plain language instead of "status code 403".
+    if (error.response?.status === 403) {
+      error.message = "You don't have permission to do that.";
+      return Promise.reject(error);
+    }
     if (!original || error.response?.status !== 401 || original._retried) {
       return Promise.reject(error);
     }

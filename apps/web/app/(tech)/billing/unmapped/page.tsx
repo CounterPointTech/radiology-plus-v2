@@ -25,7 +25,6 @@ import { Spinner } from "@/components/ui/spinner";
 import { billingApi } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import {
-  canAccessBilling,
   type BulkImportResult,
   type BulkImportRow,
   type CrosswalkStatus,
@@ -208,16 +207,6 @@ export default function UnmappedCodesPage() {
       queryClient.invalidateQueries({ queryKey: ["crosswalk"] });
     },
   });
-
-  if (user && !canAccessBilling(user.role)) {
-    return (
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <p className="text-sm text-[color:var(--color-muted-fg)]">
-          You don&apos;t have access to billing reports.
-        </p>
-      </div>
-    );
-  }
 
   const data = report.data;
   const codes = data?.codes ?? [];

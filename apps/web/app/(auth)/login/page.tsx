@@ -1,6 +1,7 @@
 "use client";
 
 import { AxiosError } from "axios";
+import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useState } from "react";
 
@@ -8,10 +9,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from "@/components/ui/card";
 import { Input, Label } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
+import { canVisit, roleHome } from "@/lib/access";
 import { useAuth } from "@/lib/auth-context";
+import type { Role } from "@/lib/types";
 
-function safeNext(raw: string | null): string {
-  if (!raw) return "/validation";
+function safeNext(raw: string | null): string | null {
+  if (!raw) return null;
   try {
     const decoded = decodeURIComponent(raw);
     // Only allow same-origin paths.
@@ -19,7 +22,15 @@ function safeNext(raw: string | null): string {
   } catch {
     // fall through
   }
-  return "/validation";
+  return null;
+}
+
+// Send the user to the requested page when their role may visit it, otherwise
+// to their role's home — one hop, no bounce through the shell guard.
+function destinationFor(role: Role | string, rawNext: string | null): Route {
+  const next = safeNext(rawNext);
+  if (next && canVisit(role, next)) return next as Route;
+  return roleHome(role);
 }
 
 // useSearchParams() forces a client-side bailout, so the production build requires
@@ -27,7 +38,7 @@ function safeNext(raw: string | null): string {
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const { login, isAuthenticated, isHydrated } = useAuth();
+  const { login, user, isAuthenticated, isHydrated } = useAuth();
 
   const [facility, setFacility] = useState("AHC");
   const [username, setUsername] = useState("");
@@ -35,21 +46,21 @@ function LoginForm() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const next = safeNext(params.get("next"));
+  const rawNext = params.get("next");
 
   useEffect(() => {
-    if (isHydrated && isAuthenticated) {
-      router.replace(next as never);
+    if (isHydrated && isAuthenticated && user) {
+      router.replace(destinationFor(user.role, rawNext));
     }
-  }, [isHydrated, isAuthenticated, router, next]);
+  }, [isHydrated, isAuthenticated, user, router, rawNext]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await login({ facility, username, password });
-      router.replace(next as never);
+      const authUser = await login({ facility, username, password });
+      router.replace(destinationFor(authUser.role, rawNext));
     } catch (err) {
       const ax = err as AxiosError<{ message?: string }>;
       if (ax.response?.status === 401) {

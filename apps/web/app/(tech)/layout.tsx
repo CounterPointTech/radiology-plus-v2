@@ -2,7 +2,7 @@
 
 import { LogOut } from "lucide-react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect } from "react";
 
 import { NavDropdown, NavLink } from "@/components/nav-dropdown";
@@ -10,11 +10,13 @@ import { StatusBanner } from "@/components/status-banner";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
+import { canVisit, roleHome, TECH_NAV } from "@/lib/access";
 import { useAuth } from "@/lib/auth-context";
-import { canAccessAdmin, canAccessBilling, isNrs, roleLabel } from "@/lib/types";
+import { isNrs, roleLabel } from "@/lib/types";
 
 export default function TechLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const pathname = usePathname();
   const { user, isAuthenticated, isHydrated, logout } = useAuth();
 
   useEffect(() => {
@@ -22,6 +24,16 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
       router.replace("/login");
     }
   }, [isHydrated, isAuthenticated, router]);
+
+  // Centralized role guard: a page the role can't visit never mounts (so its
+  // queries never fire) — the user is silently sent to their role's home.
+  const allowed = user ? canVisit(user.role, pathname) : true;
+
+  useEffect(() => {
+    if (isHydrated && user && !allowed) {
+      router.replace(roleHome(user.role));
+    }
+  }, [isHydrated, user, allowed, router]);
 
   if (!isHydrated || !isAuthenticated || !user) {
     return (
@@ -38,7 +50,7 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
         <div className="mx-auto max-w-7xl px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link
-              href="/validation"
+              href={roleHome(user.role)}
               className="flex items-center gap-2 group"
               aria-label="Radiology Plus home"
             >
@@ -51,27 +63,13 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
               </span>
             </Link>
             <nav className="hidden md:flex items-center gap-1 text-sm">
-              <NavLink href="/validation" label="Validation" />
-              {canAccessBilling(user.role) ? (
-                <NavDropdown
-                  label="Billing"
-                  items={[
-                    { href: "/billing/rvu", label: "CPT & RVU" },
-                    { href: "/billing/reconciliation", label: "Reconciliation" },
-                    { href: "/billing/unmapped", label: "Unmapped codes" },
-                  ]}
-                />
-              ) : null}
-              {canAccessAdmin(user.role) ? (
-                <NavDropdown
-                  label="Admin"
-                  items={[
-                    { href: "/admin/status-banner", label: "Status banner" },
-                    { href: "/admin/mmodal-connection", label: "M*Modal connection" },
-                    { href: "/templates", label: "Reason templates" },
-                  ]}
-                />
-              ) : null}
+              {TECH_NAV.filter((entry) => entry.visible(user.role)).map((entry) =>
+                entry.items ? (
+                  <NavDropdown key={entry.label} label={entry.label} items={entry.items} />
+                ) : (
+                  <NavLink key={entry.label} href={entry.href!} label={entry.label} />
+                ),
+              )}
             </nav>
           </div>
 
@@ -101,7 +99,15 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
         </div>
       </header>
 
-      <main className="flex-1">{children}</main>
+      <main className="flex-1">
+        {allowed ? (
+          children
+        ) : (
+          <div className="min-h-[60vh] flex items-center justify-center">
+            <Spinner size={28} />
+          </div>
+        )}
+      </main>
     </div>
   );
 }

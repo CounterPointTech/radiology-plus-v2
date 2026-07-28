@@ -13,7 +13,6 @@ import {
   Search,
   X,
 } from "lucide-react";
-import { useRouter } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ImportUploader } from "@/components/billing/import-uploader";
@@ -82,19 +81,11 @@ const fmt = (n: number | null | undefined) =>
   n == null ? "—" : n.toFixed(2);
 
 export default function RvuPage() {
-  const router = useRouter();
   const { user, isHydrated } = useAuth();
 
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(currentYear);
   const [tab, setTab] = useState<Tab>("master");
-
-  // Role gate — Billing is NRS+Admin only, enforced here in addition to the server.
-  useEffect(() => {
-    if (isHydrated && user && !canAccessBilling(user.role)) {
-      router.replace("/validation");
-    }
-  }, [isHydrated, user, router]);
 
   const imports = useQuery({
     queryKey: ["rvu-imports"],

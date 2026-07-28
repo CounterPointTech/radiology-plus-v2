@@ -32,7 +32,7 @@ export default function HomePage() {
             href="/validation"
             className="px-5 py-2.5 rounded-md border border-[color:var(--color-border)] hover:bg-[color:var(--color-surface)] transition-colors"
           >
-            Go to validation
+            Open the app
           </Link>
         </div>
 
