@@ -3,7 +3,7 @@
 import { AxiosError } from "axios";
 import type { Route } from "next";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from "@/components/ui/card";
@@ -38,21 +38,26 @@ function destinationFor(role: Role | string, rawNext: string | null): Route {
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const { login, user, isAuthenticated, isHydrated } = useAuth();
+  const { login, logout, user, isAuthenticated, isHydrated } = useAuth();
 
   const [facility, setFacility] = useState("AHC");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   const rawNext = params.get("next");
 
-  useEffect(() => {
-    if (isHydrated && isAuthenticated && user) {
-      router.replace(destinationFor(user.role, rawNext));
-    }
-  }, [isHydrated, isAuthenticated, user, router, rawNext]);
+  // Arriving here with a live session used to redirect silently, so anyone opening
+  // /login to change users was bounced back as whoever was already signed in —
+  // and keystrokes typed before hydration finished went nowhere. Ask instead.
+  const alreadySignedIn = isHydrated && isAuthenticated && !!user && !switching;
+
+  async function handleSwitchUser() {
+    setSwitching(true);
+    await logout();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -98,6 +103,30 @@ function LoginForm() {
             </CardSubtitle>
           </CardHeader>
           <CardBody>
+            {alreadySignedIn ? (
+              <div className="space-y-4">
+                <p className="text-sm">
+                  You&apos;re already signed in as{" "}
+                  <span className="font-medium">
+                    {user!.displayName || user!.username}
+                  </span>{" "}
+                  <span className="text-[color:var(--color-muted-fg)]">
+                    ({user!.role})
+                  </span>
+                  .
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => router.replace(destinationFor(user!.role, rawNext))}
+                  >
+                    Continue
+                  </Button>
+                  <Button variant="secondary" onClick={handleSwitchUser}>
+                    Sign in as someone else
+                  </Button>
+                </div>
+              </div>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="facility" required>
@@ -157,6 +186,7 @@ function LoginForm() {
                 {submitting ? "Signing in" : "Sign in"}
               </Button>
             </form>
+            )}
           </CardBody>
         </Card>
 
