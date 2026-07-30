@@ -144,7 +144,7 @@ function duplicateAccessionsSummary(group: PatientGroup): string {
   return `${dups.length} accessions are duplicated across these studies — probably duplicates.`;
 }
 
-const WORKLIST_LIMIT = 500;
+const WORKLIST_LIMIT = 1000;
 const REFRESH_MS_KEY = "worklist-refresh-ms";
 const REFRESH_ON_KEY = "worklist-refresh-on";
 const REFRESH_OPTIONS: { label: string; ms: number }[] = [

@@ -52,14 +52,18 @@ export function StepDoTheDo({
               Finalize
             </Button>
           </div>
-        ) : (
-          <CookingProgress
-            validationId={validationId}
-            active={finalizing && !outcome}
-            outcome={outcome}
-            errorMessage={errorMessage}
-          />
-        )}
+        ) : null}
+
+        {/* Mounted as soon as this step is reached so the realtime connection is
+            established and joined before Finalize is pressed; it renders nothing
+            until the run actually starts. */}
+        <CookingProgress
+          validationId={validationId}
+          active={finalizing && !outcome}
+          visible={finalizing || !!outcome}
+          outcome={outcome}
+          errorMessage={errorMessage}
+        />
 
         {finalizing && !outcome ? (
           <div className="flex items-center gap-2 text-xs text-[color:var(--color-muted-fg)]">

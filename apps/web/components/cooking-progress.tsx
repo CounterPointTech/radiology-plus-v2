@@ -23,6 +23,11 @@ interface CookingStep {
 interface CookingProgressProps {
   validationId: string;
   active: boolean;
+  /** Render the card. The realtime connection is established on mount regardless,
+   *  so we're already joined to the validation group before Finalize is clicked —
+   *  otherwise the first progress events land before negotiation finishes and the
+   *  run appears to jump straight to "Cooked!". */
+  visible?: boolean;
   /** Final result from the finalize call. Makes the heading authoritative even
    *  if SignalR progress events were missed. */
   outcome?: DoTheDoOutcome | null;
@@ -41,6 +46,7 @@ function prefersReducedMotion(): boolean {
 export function CookingProgress({
   validationId,
   active,
+  visible = true,
   outcome,
   errorMessage,
   onComplete,
@@ -54,8 +60,16 @@ export function CookingProgress({
     setReduceMotion(prefersReducedMotion());
   }, []);
 
+  // Hold the callbacks in refs so a parent re-render with fresh closures can't
+  // tear down and rebuild the connection mid-run.
+  const onCompleteRef = useRef(onComplete);
+  const onErrorRef = useRef(onError);
   useEffect(() => {
-    if (!active) return;
+    onCompleteRef.current = onComplete;
+    onErrorRef.current = onError;
+  }, [onComplete, onError]);
+
+  useEffect(() => {
     let cancelled = false;
 
     const connection = buildMonitoringConnection();
@@ -70,10 +84,10 @@ export function CookingProgress({
           dingPlayedRef.current = true;
           playDing();
         }
-        onComplete?.(event);
+        onCompleteRef.current?.(event);
       }
       if (event.status === DoTheDoRunStatus.Failed) {
-        onError?.(event);
+        onErrorRef.current?.(event);
       }
     });
 
@@ -99,7 +113,7 @@ export function CookingProgress({
         await safeStop(connection);
       })();
     };
-  }, [active, validationId, onComplete, onError]);
+  }, [validationId]);
 
   // Reset playback gate when we re-arm.
   useEffect(() => {
@@ -118,6 +132,9 @@ export function CookingProgress({
     ((outcome?.success ?? false) ||
       (steps.length > 0 && steps.every((s) => s.status === DoTheDoRunStatus.Succeeded)));
   const cooking = !failed && !cooked;
+
+  // Stay mounted (and connected) but render nothing until the run starts.
+  if (!visible) return null;
 
   const heading = failed ? "Couldn’t finish" : cooked ? "Cooked!" : "Cooking…";
   const subtext = failed
