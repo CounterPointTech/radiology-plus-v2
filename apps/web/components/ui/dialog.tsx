@@ -92,10 +92,16 @@ export function Dialog({
             className={cn(
               "relative w-full max-w-md rounded-lg border border-[color:var(--color-border)]",
               "bg-[color:var(--color-surface)] shadow-2xl",
+              // Never grow past the viewport. Without this a tall dialog (the CPT
+              // map dialog runs ~940px) is centred and clipped at BOTH ends, and
+              // nothing scrolls it — the page behind takes the wheel instead — so
+              // the action buttons become unreachable on any screen shorter than
+              // the dialog. Cap here and scroll the body below.
+              "max-h-[calc(100dvh-2rem)] flex flex-col",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--color-accent)]/60",
             )}
           >
-            <div className="px-5 pt-5 pb-2">
+            <div className="px-5 pt-5 pb-2 shrink-0">
               <h2
                 id={titleId}
                 className="text-lg"
@@ -112,7 +118,9 @@ export function Dialog({
                 </p>
               ) : null}
             </div>
-            <div className="px-5 pb-5">{children}</div>
+            {/* min-h-0 so this flex child may shrink below its content height,
+                which is what lets overflow-y-auto actually engage. */}
+            <div className="px-5 pb-5 overflow-y-auto min-h-0">{children}</div>
           </motion.div>
         </motion.div>
       ) : null}

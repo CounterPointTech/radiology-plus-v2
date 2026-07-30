@@ -10,16 +10,24 @@ import { Input, Label } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
 
+const CONSOLE_HOME = "/scripts";
+
 function safeNext(raw: string | null): string {
-  if (!raw) return "/scripts";
+  if (!raw) return CONSOLE_HOME;
   try {
     const decoded = decodeURIComponent(raw);
+    // "/" is the public marketing landing, and it renders a "Sign in" button
+    // with no route into the console. Hitting the console root while signed
+    // out bounces through /login?next=%2F, so honouring that literally lands a
+    // freshly-authenticated admin back on a page telling them to sign in.
+    // Treat it as "no destination given" and send them to the console home.
+    if (decoded === "/") return CONSOLE_HOME;
     // Only allow same-origin paths.
     if (decoded.startsWith("/") && !decoded.startsWith("//")) return decoded;
   } catch {
     // fall through
   }
-  return "/scripts";
+  return CONSOLE_HOME;
 }
 
 // useSearchParams() forces a client-side bailout, so the production build requires
