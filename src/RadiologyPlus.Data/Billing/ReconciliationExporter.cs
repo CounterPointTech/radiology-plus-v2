@@ -60,13 +60,17 @@ public sealed class ReconciliationExporter : IReconciliationExporter
         ws.Cell("A1").Style.Font.Bold = true;
         ws.Cell("A1").Style.Font.FontSize = 14;
 
+        // All three render in LOCAL time. GeneratedAt comes back from the DB as UTC, so
+        // without ToLocalTime() the workbook said 13:36 while the screen said 09:36 AM for
+        // the same run. Period start/end get the same treatment so the three stamps are
+        // consistent with each other and with the UI. Storage stays UTC; this is display.
         int row = 3;
         ws.Cell(row, 1).Value = "Period start";
-        ws.Cell(row++, 2).Value = run.PeriodStart.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        ws.Cell(row++, 2).Value = run.PeriodStart.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         ws.Cell(row, 1).Value = "Period end";
-        ws.Cell(row++, 2).Value = run.PeriodEnd.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        ws.Cell(row++, 2).Value = run.PeriodEnd.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         ws.Cell(row, 1).Value = "Generated at";
-        ws.Cell(row++, 2).Value = run.GeneratedAt.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+        ws.Cell(row++, 2).Value = run.GeneratedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
         ws.Cell(row, 1).Value = "Run kind";
         ws.Cell(row++, 2).Value = run.RunKind == 2 ? "Final" : "Preview";
 

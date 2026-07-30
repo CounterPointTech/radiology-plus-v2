@@ -399,7 +399,11 @@ export default function UnmappedCodesPage() {
                 ) : codes.length === 0 ? (
                   <tr>
                     <td colSpan={8} className="px-4 py-10 text-center text-sm text-[color:var(--color-muted-fg)]">
-                      Nothing unmapped in this window — every signed code matched the master.
+                      {/* Don't claim a clean bill of health we haven't earned: this branch
+                          fires both when every code matched AND when the window held no
+                          signed reports at all (the 60-day default falls outside the clone
+                          entirely). Stay neutral — it's true either way. */}
+                      Nothing unmapped for this window.
                     </td>
                   </tr>
                 ) : filteredCodes.length === 0 ? (
@@ -452,7 +456,12 @@ export default function UnmappedCodesPage() {
                           {facilityLabel(c, facility)}
                         </td>
                         <td className="px-4 py-3">
-                          <Badge variant={isCpt ? "accent" : "caution"}>
+                          {/* Non-CPT is a classification, not a fault: ~62-70% of this
+                              customer's service-line codes are local codes that were never
+                              CPTs. Caution colouring painted the whole table red and buried
+                              the one row that IS actionable. Accent stays on Missing CPT —
+                              a code that looks like a CPT but is absent from our master. */}
+                          <Badge variant={isCpt ? "accent" : "neutral"}>
                             {isCpt ? "Missing CPT" : "Non-CPT"}
                           </Badge>
                         </td>

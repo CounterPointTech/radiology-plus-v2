@@ -83,6 +83,30 @@ public static class BillingEndpoints
         return app;
     }
 
+    /// <summary>
+    /// Re-tags a caller-supplied window bound as LOCAL wall-clock.
+    /// </summary>
+    /// <remarks>
+    /// Every billing window is local wall-clock, because Novarad's <c>signed_date</c> is
+    /// <c>timestamp without time zone</c> holding local time. But a bare query value like
+    /// <c>?from=2026-04-01</c> model-binds to a DateTimeOffset at UTC midnight, and the reader
+    /// then converts to local — shifting the window by the UTC offset. On this box that moved
+    /// April 2026 back four hours: it pulled in the tail of March 31 and dropped the tail of
+    /// April 30, a 217-report difference out of 39,228.
+    ///
+    /// So take the wall-clock components the caller actually sent and re-tag them with the
+    /// local offset: the date you type is the date you get. Note this deliberately
+    /// reinterprets an explicit non-local offset rather than honouring it — acceptable while
+    /// the only caller is our own date-only UI. Replacing these params with a date-only type
+    /// would make the intent unambiguous at the signature; deferred until after the demo.
+    ///
+    /// A value already carrying the local offset (e.g. DateTimeOffset.Now) passes through
+    /// unchanged.
+    /// </remarks>
+    private static DateTimeOffset AsLocalWallClock(DateTimeOffset value) =>
+        new(DateTime.SpecifyKind(value.DateTime, DateTimeKind.Unspecified),
+            TimeZoneInfo.Local.GetUtcOffset(value.DateTime));
+
     [Authorize]
     private static async Task<IResult> PreviewReconciliationAsync(
         ICurrentUser currentUser,
@@ -98,8 +122,8 @@ public static class BillingEndpoints
         // Default window: last 60 days (rough proxy for "current 2-month billing cycle").
         // Callers should pass explicit from/to once we know what Amber's billing-window boundary actually is.
         // Window is local wall-clock to match Novarad's signed_date (timestamp without time zone).
-        var fromLocal = from ?? DateTimeOffset.Now.AddDays(-60);
-        var toLocal   = to   ?? DateTimeOffset.Now;
+        var fromLocal = AsLocalWallClock(from ?? DateTimeOffset.Now.AddDays(-60));
+        var toLocal   = AsLocalWallClock(to   ?? DateTimeOffset.Now);
         if (toLocal <= fromLocal)
             return Results.BadRequest(new { error = "`to` must be after `from`." });
         if (toLocal - fromLocal > TimeSpan.FromDays(370))
@@ -133,8 +157,8 @@ public static class BillingEndpoints
 
         // Window is local wall-clock so unmapped + reconciliation always agree on the
         // window and match Novarad's signed_date (timestamp without time zone).
-        var fromLocal = from ?? DateTimeOffset.Now.AddDays(-60);
-        var toLocal   = to   ?? DateTimeOffset.Now;
+        var fromLocal = AsLocalWallClock(from ?? DateTimeOffset.Now.AddDays(-60));
+        var toLocal   = AsLocalWallClock(to   ?? DateTimeOffset.Now);
         if (toLocal <= fromLocal)
             return Results.BadRequest(new { error = "`to` must be after `from`." });
         if (toLocal - fromLocal > TimeSpan.FromDays(370))
@@ -167,8 +191,10 @@ public static class BillingEndpoints
         var user = currentUser.Require();
         if (!user.Role.CanAccessBilling()) return Results.Forbid();
 
-        var fromLocal = req.From;
-        var toLocal   = req.To;
+        // Same local-wall-clock normalisation as the GET endpoints, so a persisted run covers
+        // exactly the window the preview showed.
+        var fromLocal = AsLocalWallClock(req.From);
+        var toLocal   = AsLocalWallClock(req.To);
         if (toLocal <= fromLocal)
             return Results.BadRequest(new { error = "`to` must be after `from`." });
         if (toLocal - fromLocal > TimeSpan.FromDays(370))
