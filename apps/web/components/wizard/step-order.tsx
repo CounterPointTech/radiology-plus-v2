@@ -86,9 +86,10 @@ export function StepOrder({
         <label
           className={cn(
             "flex items-start gap-3 rounded-md border border-[color:var(--color-border)] p-3 cursor-pointer",
-            createOrderRequested && "border-[color:var(--color-caution)]/60 bg-[color:var(--color-caution)]/8",
+            createOrderRequested && "border-[color:var(--color-accent)]/60 bg-[color:var(--color-accent)]/8",
           )}
         >
+          {/* Accent, not caution: requesting an order is a normal choice, not an error. */}
           <input
             type="checkbox"
             checked={createOrderRequested}
@@ -97,11 +98,11 @@ export function StepOrder({
               if (v) onSelect(null);
               onToggleCreate(v);
             }}
-            className="mt-1 size-4 accent-[color:var(--color-caution)]"
+            className="mt-1 size-4 accent-[color:var(--color-accent)]"
           />
           <div className="space-y-1">
             <div className="flex items-center gap-2 text-sm font-medium">
-              <FilePlus2 className="size-4 text-[color:var(--color-caution)]" />
+              <FilePlus2 className="size-4 text-[color:var(--color-accent)]" />
               Can&apos;t find the order — request one is created
             </div>
             <p className="text-xs text-[color:var(--color-muted-fg)]">
