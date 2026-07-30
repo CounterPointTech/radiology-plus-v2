@@ -21,7 +21,7 @@ import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
-import { canAccessAdmin, canAccessScripting, isNrs, roleLabel } from "@/lib/types";
+import { canAccessAdmin, canAccessScripting, roleLabel } from "@/lib/types";
 
 const COLLAPSE_KEY = "radplus.admin.sidebar";
 
@@ -224,9 +224,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             <span className="block truncate text-xs font-medium">
               {user.displayName ?? user.username}
             </span>
+            {/* Just the role. The old " · NRS" suffix could only ever fire when
+                roleLabel had already printed "NRS", so it rendered "NRS · NRS". */}
             <span className="block text-[9px] uppercase tracking-[0.2em] text-[color:var(--color-muted-fg)]">
               {roleLabel(user.role)}
-              {isNrs(user.role) ? " · NRS" : ""}
             </span>
           </span>
         )}

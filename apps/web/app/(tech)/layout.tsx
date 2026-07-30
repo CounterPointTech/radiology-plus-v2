@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { canVisit, roleHome, TECH_NAV } from "@/lib/access";
 import { useAuth } from "@/lib/auth-context";
-import { isNrs, roleLabel } from "@/lib/types";
+import { roleLabel } from "@/lib/types";
 
 export default function TechLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -79,9 +79,10 @@ export default function TechLayout({ children }: { children: React.ReactNode }) 
               <span className="text-sm font-medium">
                 {user.displayName ?? user.username}
               </span>
+              {/* Just the role. The old " · NRS" suffix could only ever fire when
+                  roleLabel had already printed "NRS", so it rendered "NRS · NRS". */}
               <span className="text-[10px] uppercase tracking-[0.2em] text-[color:var(--color-muted-fg)]">
                 {roleLabel(user.role)}
-                {isNrs(user.role) ? " · NRS" : ""}
               </span>
             </div>
             <Button
