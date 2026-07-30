@@ -16,6 +16,28 @@ public sealed class NovaradReportsReader : INovaradReportsReader
 
     public NovaradReportsReader(INovaradDbContext novarad) => _novarad = novarad;
 
+    // Which report statuses count as "signed" for billing credit.
+    //
+    // Novarad's signed-report lifecycle is Finalized → Distributed, where
+    // 'Distributed' means signed AND released to the referring physician — the
+    // terminal state, not an earlier one. It carries 2,222,894 of the 2,428,289
+    // signed reports on the customer clone (91.6%), so omitting it silently drops
+    // most of a billing period.
+    //
+    // The literal status 'Signed' is deliberately NOT here: it exists on only 8
+    // rows clone-wide and not one of them has a signed_date, so it can never
+    // satisfy the `signed_date IS NOT NULL` predicate anyway.
+    //
+    // 'Transcribed' is excluded as a pre-signature state (14,119 rows, only 2,506
+    // with a signed_date). 'Dictated' has no signed dates at all.
+    //
+    // Verified against the live customer clone 2026-07-30. This list was previously
+    // ('Signed', 'Finalized'), derived from a 3-report seeded test dataset that
+    // happened to contain neither of the statuses the customer actually uses; that
+    // returned 468 of April 2026's 38,997 signed reports. Do not re-narrow this from
+    // test data — check the real status distribution.
+    private const string SignedStatusFilter = "r.status IN ('Finalized', 'Distributed')";
+
     // Novarad's signed_date columns are `timestamp without time zone` holding LOCAL wall-clock.
     // For window params: convert the bound to local wall-clock with Kind=Unspecified so Npgsql
     // sends `timestamp without time zone` and the DB does a literal (timezone-free) comparison.
@@ -55,7 +77,7 @@ public sealed class NovaradReportsReader : INovaradReportsReader
             LEFT JOIN ris.physicians ph  ON ph.physician_id = r.signing_physician_id
             LEFT JOIN ris.people pe      ON pe.person_id    = ph.person_id
             WHERE r.signed_date IS NOT NULL
-              AND r.status IN ('Signed', 'Finalized')
+              AND {SignedStatusFilter}
               AND r.signed_date >= @window_start
               AND r.signed_date <  @window_end
               AND r.signing_physician_id IS NOT NULL
@@ -152,7 +174,7 @@ public sealed class NovaradReportsReader : INovaradReportsReader
             LEFT JOIN ris.physicians ph               ON ph.physician_id = r.signing_physician_id
             LEFT JOIN ris.people pe                   ON pe.person_id    = ph.person_id
             WHERE r.signed_date IS NOT NULL
-              AND r.status IN ('Signed', 'Finalized')
+              AND {SignedStatusFilter}
               AND r.signed_date >= @window_start
               AND r.signed_date <  @window_end
               AND r.signing_physician_id IS NOT NULL
