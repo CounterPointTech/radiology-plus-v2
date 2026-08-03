@@ -2,7 +2,7 @@
 
 import { AxiosError } from "axios";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardBody, CardHeader, CardSubtitle, CardTitle } from "@/components/ui/card";
@@ -10,16 +10,24 @@ import { Input, Label } from "@/components/ui/input";
 import { Spinner } from "@/components/ui/spinner";
 import { useAuth } from "@/lib/auth-context";
 
+const CONSOLE_HOME = "/scripts";
+
 function safeNext(raw: string | null): string {
-  if (!raw) return "/scripts";
+  if (!raw) return CONSOLE_HOME;
   try {
     const decoded = decodeURIComponent(raw);
+    // "/" is the public marketing landing, and it renders a "Sign in" button
+    // with no route into the console. Hitting the console root while signed
+    // out bounces through /login?next=%2F, so honouring that literally lands a
+    // freshly-authenticated admin back on a page telling them to sign in.
+    // Treat it as "no destination given" and send them to the console home.
+    if (decoded === "/") return CONSOLE_HOME;
     // Only allow same-origin paths.
     if (decoded.startsWith("/") && !decoded.startsWith("//")) return decoded;
   } catch {
     // fall through
   }
-  return "/scripts";
+  return CONSOLE_HOME;
 }
 
 // useSearchParams() forces a client-side bailout, so the production build requires
@@ -27,21 +35,27 @@ function safeNext(raw: string | null): string {
 function LoginForm() {
   const router = useRouter();
   const params = useSearchParams();
-  const { login, isAuthenticated, isHydrated } = useAuth();
+  const { login, logout, user, isAuthenticated, isHydrated } = useAuth();
 
   const [facility, setFacility] = useState("AHC");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   const next = safeNext(params.get("next"));
 
-  useEffect(() => {
-    if (isHydrated && isAuthenticated) {
-      router.replace(next as never);
-    }
-  }, [isHydrated, isAuthenticated, router, next]);
+  // Arriving with a live session used to redirect silently, so anyone opening /login to
+  // change accounts was bounced straight back as whoever was already signed in — and the
+  // only way out was hunting for Sign out in the collapsed sidebar. Ask instead. Mirrors
+  // the clinical app's login panel (PR #11).
+  const alreadySignedIn = isHydrated && isAuthenticated && !!user && !switching;
+
+  async function handleSwitchUser() {
+    setSwitching(true);
+    await logout();
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -87,6 +101,28 @@ function LoginForm() {
             </CardSubtitle>
           </CardHeader>
           <CardBody>
+            {alreadySignedIn ? (
+              <div className="space-y-4">
+                <p className="text-sm">
+                  You&apos;re already signed in as{" "}
+                  <span className="font-medium">
+                    {user!.displayName || user!.username}
+                  </span>{" "}
+                  <span className="text-[color:var(--color-muted-fg)]">
+                    ({user!.role})
+                  </span>
+                  .
+                </p>
+                <div className="flex gap-2">
+                  <Button onClick={() => router.replace(next as never)}>
+                    Continue
+                  </Button>
+                  <Button variant="secondary" onClick={handleSwitchUser}>
+                    Sign in as someone else
+                  </Button>
+                </div>
+              </div>
+            ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div className="space-y-1.5">
                 <Label htmlFor="facility" required>
@@ -146,6 +182,7 @@ function LoginForm() {
                 {submitting ? "Signing in" : "Sign in"}
               </Button>
             </form>
+            )}
           </CardBody>
         </Card>
 
