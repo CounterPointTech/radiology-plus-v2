@@ -12,6 +12,16 @@ import { useAuth } from "@/lib/auth-context";
 
 const CONSOLE_HOME = "/scripts";
 
+// A host that can never resolve (RFC 2606 reserves .invalid), used only as the base
+// for parsing. Resolving the candidate with the URL parser applies exactly the rules
+// the browser will apply, which prefix checks cannot: "/\host" and "/\/\host" look
+// like paths but resolve as network-path references to another host, so the old
+// `startsWith("/") && !startsWith("//")` test let them through and shipped the user
+// off-origin. A fixed sentinel keeps this SSR-safe (no `window`) and independent of
+// whichever port the console is served on.
+const SAME_ORIGIN_BASE = "http://radiology-plus.invalid";
+
+/** The requested path, but only when it cannot leave this origin. */
 function safeNext(raw: string | null): string {
   if (!raw) return CONSOLE_HOME;
   try {
@@ -22,10 +32,13 @@ function safeNext(raw: string | null): string {
     // freshly-authenticated admin back on a page telling them to sign in.
     // Treat it as "no destination given" and send them to the console home.
     if (decoded === "/") return CONSOLE_HOME;
-    // Only allow same-origin paths.
-    if (decoded.startsWith("/") && !decoded.startsWith("//")) return decoded;
+    const url = new URL(decoded, SAME_ORIGIN_BASE);
+    // Anything carrying its own host, scheme or credentials resolves elsewhere.
+    if (url.origin !== SAME_ORIGIN_BASE) return CONSOLE_HOME;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    if (path.startsWith("/") && !path.startsWith("//")) return path;
   } catch {
-    // fall through
+    // Malformed escape sequence or unparseable URL — treat as no destination.
   }
   return CONSOLE_HOME;
 }
