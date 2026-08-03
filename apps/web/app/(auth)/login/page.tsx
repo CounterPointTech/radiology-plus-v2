@@ -13,23 +13,36 @@ import { canVisit, roleHome } from "@/lib/access";
 import { useAuth } from "@/lib/auth-context";
 import type { Role } from "@/lib/types";
 
+// A host that can never resolve (RFC 2606 reserves .invalid), used only as the base
+// for parsing. Resolving the candidate with the URL parser applies exactly the rules
+// the browser will apply, which prefix checks cannot: "/\host" and "/\/\host" look
+// like paths but resolve as network-path references to another host, so the old
+// `startsWith("/") && !startsWith("//")` test let them through and shipped the user
+// off-origin. A fixed sentinel keeps this SSR-safe (no `window`) and independent of
+// whichever port the app is served on.
+const SAME_ORIGIN_BASE = "http://radiology-plus.invalid";
+
+/** The requested path, but only when it cannot leave this origin. */
 function safeNext(raw: string | null): string | null {
   if (!raw) return null;
   try {
-    const decoded = decodeURIComponent(raw);
-    // Only allow same-origin paths.
-    if (decoded.startsWith("/") && !decoded.startsWith("//")) return decoded;
+    const url = new URL(decodeURIComponent(raw), SAME_ORIGIN_BASE);
+    // Anything carrying its own host, scheme or credentials resolves elsewhere.
+    if (url.origin !== SAME_ORIGIN_BASE) return null;
+    const path = `${url.pathname}${url.search}${url.hash}`;
+    return path.startsWith("/") && !path.startsWith("//") ? path : null;
   } catch {
-    // fall through
+    // Malformed escape sequence or unparseable URL — treat as no destination.
+    return null;
   }
-  return null;
 }
 
 // Send the user to the requested page when their role may visit it, otherwise
 // to their role's home — one hop, no bounce through the shell guard.
 function destinationFor(role: Role | string, rawNext: string | null): Route {
   const next = safeNext(rawNext);
-  if (next && canVisit(role, next)) return next as Route;
+  // Match the role rules on the path alone; a query string is not part of the route.
+  if (next && canVisit(role, next.split(/[?#]/)[0])) return next as Route;
   return roleHome(role);
 }
 
