@@ -1,0 +1,97 @@
+# Local overlay: build every image from source instead of pulling, and publish the
+# ports a browser needs. Use WITH compose.yaml, never alone:
+#
+#   docker compose -f compose.yaml -f compose.dev.yaml --env-file env/local.env up -d --build
+#
+# This is the full-stack parity check, not the day-to-day inner loop — keep running the
+# .NET hosts and `npm run dev` natively for that.
+#
+# Until the front ends move to same-origin URLs (Phase 3), the browser must reach the
+# APIs directly, so the web images are built with absolute localhost URLs baked in.
+# That is exactly the coupling Phase 3 removes: NEXT_PUBLIC_* is inlined at build time,
+# so an image built here is NOT promotable to a server.
+#
+# Ports are deliberately offset (15171/15181/13002/13100 rather than 5171/5181/3002/3100)
+# so this stack can run alongside the natively-started hosts without either shadowing
+# the other. Whichever bound the port first wins, and the loser fails in a way that
+# looks like an application error rather than a collision.
+
+services:
+  postgres:
+    ports:
+      # Deliberately not 5432: the host already runs Postgres with rad_plus and the
+      # Novarad clone on that port, and this must not shadow it.
+      - "127.0.0.1:15432:5432"
+
+  migrator:
+    image: radplus-migrator:dev
+    build: &build-dotnet
+      context: .
+      dockerfile: docker/Dockerfile.dotnet
+      args:
+        PROJECT: RadiologyPlus.Migrator
+    # Reaches the Novarad clone running on the Windows host. A tenant row created here
+    # must store host.docker.internal, not localhost — inside a container "localhost"
+    # is the container itself.
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  api:
+    image: radplus-api:dev
+    build:
+      <<: *build-dotnet
+      args:
+        PROJECT: RadiologyPlus.API
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - "15171:5171"
+
+  adminapi:
+    image: radplus-adminapi:dev
+    build:
+      <<: *build-dotnet
+      args:
+        PROJECT: RadiologyPlus.AdminApi
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports:
+      - "15181:5181"
+
+  service:
+    image: radplus-service:dev
+    build:
+      <<: *build-dotnet
+      args:
+        PROJECT: RadiologyPlus.Service
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  adminservice:
+    image: radplus-adminservice:dev
+    build:
+      <<: *build-dotnet
+      args:
+        PROJECT: RadiologyPlus.AdminService
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  web:
+    image: radplus-web:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.next
+      args:
+        APP: web
+        NEXT_PUBLIC_API_URL: http://localhost:15171
+        NEXT_PUBLIC_SIGNALR_URL: http://localhost:15171/hubs
+        NEXT_PUBLIC_SHOW_DEV_TOOLS: "false"
+    ports:
+      - "13002:3000"
+
+  admin:
+    image: radplus-admin:dev
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.next
+      args:
+        APP: admin
+        NEXT_PUBLIC_API_URL: http://localhost:15181
+        NEXT_PUBLIC_SHOW_DEV_TOOLS: "false"
+    ports:
+      - "13100:3000"

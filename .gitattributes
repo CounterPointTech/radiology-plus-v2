@@ -1,0 +1,10 @@
+# Files that are consumed by Linux inside containers must keep LF endings regardless of
+# what a Windows checkout does. A shell script with CRLF fails with a confusing
+# "\r: not found"; a Dockerfile is more forgiving but there is no reason to risk it.
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+*.yaml          text eol=lf
+*.yml           text eol=lf
+Caddyfile       text eol=lf
+.dockerignore   text eol=lf
+env/*.env       text eol=lf

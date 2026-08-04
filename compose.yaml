@@ -1,0 +1,165 @@
+# The Radiology Plus stack. One file, three environments — the difference is the
+# project name, the env file, and the image tag:
+#
+#   docker compose -p radplus-test --env-file /opt/radplus/env/test.env -f compose.yaml up -d
+#
+# For a local stack that builds from source instead of pulling, add compose.dev.yaml.
+#
+# Nothing here publishes a port except through the reverse proxy (compose.proxy.yaml).
+# Postgres in particular stays on the internal network: the `system_bypass` RLS policy
+# means any connection that never sets app.tenant_id sees every tenant's rows, so an
+# exposed port plus one leaked credential is a full-database PHI incident.
+
+x-images: &image-registry ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}
+x-tag: &image-tag ${TAG:-dev}
+
+# One password variable feeds both Postgres and every consumer, so the two can never
+# drift apart.
+x-app-db: &app-db >-
+  Host=postgres;Port=5432;Database=${POSTGRES_DB:-rad_plus};Username=${POSTGRES_USER:-postgres};Password=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+
+x-dotnet-env: &dotnet-env
+  ConnectionStrings__AppDb: *app-db
+  # Decrypts the per-tenant Novarad and M*Modal credentials stored in tenancy.*.
+  # The migrator must be given the SAME value or rows it writes decrypt to garbage.
+  Encryption__Key: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+  TZ: ${TZ:-America/New_York}
+  Serilog__MinimumLevel__Default: ${LOG_LEVEL:-Information}
+
+x-dotnet-service: &dotnet-service
+  restart: unless-stopped
+  networks: [internal]
+  depends_on:
+    postgres:
+      condition: service_healthy
+    migrator:
+      condition: service_completed_successfully
+
+services:
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rad_plus}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      # Without this the migrator races the database's first-boot initialisation.
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB -q"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Runs to completion, then everything else starts. Never migrate on startup: the
+  # four hosts boot simultaneously and MigrationRunner takes no advisory lock, so
+  # concurrent runs would race on RLS policy DDL.
+  migrator:
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-migrator:${TAG:-dev}
+    restart: "no"
+    networks: [internal]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # The Migrator is the one component that reads its configuration with an
+      # AddEnvironmentVariables("RADPLUS_") prefix. Mapping both names from the same
+      # source here means an operator never has to know that.
+      RADPLUS_ConnectionStrings__AppDb: *app-db
+      RADPLUS_Encryption__Key: ${ENCRYPTION_KEY:?ENCRYPTION_KEY is required}
+      TZ: ${TZ:-America/New_York}
+
+  # ---------------------------------------------------------------------------
+  api:
+    <<: *dotnet-service
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-api:${TAG:-dev}
+    environment:
+      <<: *dotnet-env
+      # ASPNETCORE_HTTP_PORTS binds all interfaces. ASPNETCORE_URLS=http://localhost:N
+      # would bind loopback only, leaving the container unreachable with no useful error.
+      ASPNETCORE_HTTP_PORTS: "5171"
+      Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
+      # Belt-and-braces: once the front ends are same-origin behind the proxy these
+      # requests are no longer cross-origin at all, but CORS uses AllowCredentials(),
+      # so a wildcard is impossible and every real origin must be named.
+      AllowedOrigins__0: ${WEB_ORIGIN:?WEB_ORIGIN is required}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5171/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  adminapi:
+    <<: *dotnet-service
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-adminapi:${TAG:-dev}
+    environment:
+      <<: *dotnet-env
+      ASPNETCORE_HTTP_PORTS: "5181"
+      Jwt__Secret: ${JWT_SECRET:?JWT_SECRET is required}
+      AllowedOrigins__0: ${ADMIN_ORIGIN:?ADMIN_ORIGIN is required}
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5181/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # The worklist projector. Its LookbackWindow default is 7 days, on which it projects
+  # nothing and then prunes the entire worklist within four hours — so this value is
+  # load-bearing, not tuning. (Phase 2 moves the safe default into the source so an
+  # env-file omission can no longer do that.)
+  service:
+    <<: *dotnet-service
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-service:${TAG:-dev}
+    environment:
+      <<: *dotnet-env
+      TechValidation__LookbackWindow: ${TECH_LOOKBACK_WINDOW:-120.00:00:00}
+
+  adminservice:
+    <<: *dotnet-service
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-adminservice:${TAG:-dev}
+    environment:
+      <<: *dotnet-env
+
+  # ---------------------------------------------------------------------------
+  web:
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-web:${TAG:-dev}
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      TZ: ${TZ:-America/New_York}
+    depends_on: [api]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/login >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  admin:
+    image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-admin:${TAG:-dev}
+    restart: unless-stopped
+    networks: [internal]
+    environment:
+      TZ: ${TZ:-America/New_York}
+    depends_on: [adminapi]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/login >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
