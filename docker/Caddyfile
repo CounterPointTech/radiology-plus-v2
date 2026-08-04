@@ -1,0 +1,65 @@
+# Reverse proxy for every Radiology Plus stack.
+#
+# Each environment is two hostnames, and each hostname serves its front end at / and
+# its API under /api. That makes the browser's requests same-origin, which is what
+# lets ONE web image be promoted dev -> test -> prod unchanged: the API location stops
+# being a build-time fact. It also means CORS is no longer exercised at all.
+#
+# Hostnames and upstreams come from the environment so this one file serves all three
+# stacks. Upstreams are container names, which resolve on the shared `radplus-edge`
+# network (see compose.yaml).
+
+{
+	# Caddy obtains and renews Let's Encrypt certificates automatically. Locally,
+	# ACME_CA is set to the internal CA so *.localhost gets a self-signed cert.
+	email {$ACME_EMAIL:admin@example.com}
+	{$ACME_STAGING_DIRECTIVE}
+}
+
+# Shared behaviour for one environment: import stack <api-upstream> <web-upstream>
+(stack) {
+	# The API, mounted under /api. handle_path strips the prefix, so /api/auth/login
+	# arrives at the backend as /auth/login and no backend routes change.
+	handle_path /api/* {
+		reverse_proxy {args[0]}
+	}
+
+	# Everything else is the Next.js front end.
+	handle {
+		reverse_proxy {args[1]}
+	}
+
+	# SignalR passes its JWT as a query parameter (the hub reads ?access_token=),
+	# so without this filter every access token for a PHI system is written to the
+	# proxy log in plaintext. `delete` drops the parameter, keeping the rest of the URI.
+	log {
+		output stdout
+		format filter {
+			wrap console
+			fields {
+				request>uri query {
+					delete access_token
+				}
+			}
+		}
+	}
+
+	# Basic hardening. HSTS is deliberately omitted here — turn it on only once every
+	# environment is reliably on HTTPS, because it is sticky in browsers.
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}
+
+# --- clinical app -----------------------------------------------------------
+{$WEB_HOST} {
+	import stack {$API_UPSTREAM} {$WEB_UPSTREAM}
+}
+
+# --- admin console ----------------------------------------------------------
+{$ADMIN_HOST} {
+	import stack {$ADMINAPI_UPSTREAM} {$ADMIN_UPSTREAM}
+}

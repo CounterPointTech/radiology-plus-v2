@@ -31,7 +31,7 @@ appsettings.Local.json
 # Container stack environment files: real DB passwords, JWT secret and the encryption
 # key that decrypts every stored Novarad/M*Modal credential. Only the template ships.
 env/*.env
-!env/example.env
+!env/example*.env
 
 # IDE
 .idea/

@@ -78,8 +78,11 @@ services:
       dockerfile: docker/Dockerfile.next
       args:
         APP: web
-        NEXT_PUBLIC_API_URL: http://localhost:15171
-        NEXT_PUBLIC_SIGNALR_URL: http://localhost:15171/hubs
+        # Same-origin, matching what CI builds. The published port below therefore
+        # serves the UI but cannot authenticate — /api exists only through the proxy.
+        # Use https://rp.localhost, not http://localhost:13002, to exercise the app.
+        NEXT_PUBLIC_API_URL: /api
+        NEXT_PUBLIC_SIGNALR_URL: /api/hubs
         NEXT_PUBLIC_SHOW_DEV_TOOLS: "false"
     ports:
       - "13002:3000"
@@ -91,7 +94,8 @@ services:
       dockerfile: docker/Dockerfile.next
       args:
         APP: admin
-        NEXT_PUBLIC_API_URL: http://localhost:15181
+        # Same-origin; reach it at https://admin-rp.localhost through the proxy.
+        NEXT_PUBLIC_API_URL: /api
         NEXT_PUBLIC_SHOW_DEV_TOOLS: "false"
     ports:
       - "13100:3000"

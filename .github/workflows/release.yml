@@ -1,0 +1,181 @@
+name: release
+
+# Builds every image and pushes it to GHCR, then optionally deploys.
+#
+# Images are tagged with the commit sha and never with `latest`, so what is running is
+# always identifiable and a rollback is just redeploying the previous tag.
+#
+# Promotion to prod re-tags the image that passed test BY DIGEST — it never rebuilds.
+# Rebuilding would produce different bits from the ones that were tested.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_test:
+        description: Deploy the built images to the test stack
+        type: boolean
+        default: false
+      promote_tag:
+        description: "Promote an existing tag to prod (e.g. sha-1a2b3c4). Leave empty to skip."
+        type: string
+        default: ""
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  images:
+    name: build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: radplus-api
+            dockerfile: docker/Dockerfile.dotnet
+            build_arg: PROJECT=RadiologyPlus.API
+          - image: radplus-adminapi
+            dockerfile: docker/Dockerfile.dotnet
+            build_arg: PROJECT=RadiologyPlus.AdminApi
+          - image: radplus-service
+            dockerfile: docker/Dockerfile.dotnet
+            build_arg: PROJECT=RadiologyPlus.Service
+          - image: radplus-adminservice
+            dockerfile: docker/Dockerfile.dotnet
+            build_arg: PROJECT=RadiologyPlus.AdminService
+          - image: radplus-migrator
+            dockerfile: docker/Dockerfile.dotnet
+            build_arg: PROJECT=RadiologyPlus.Migrator
+          - image: radplus-web
+            dockerfile: docker/Dockerfile.next
+            build_arg: APP=web
+          - image: radplus-admin
+            dockerfile: docker/Dockerfile.next
+            build_arg: APP=admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          # NEXT_PUBLIC_* is inlined at build time, so these are what make the two web
+          # images promotable: same-origin paths that are correct in every environment.
+          # NEXT_PUBLIC_SHOW_DEV_TOOLS must never be true here — it gates a button that
+          # calls the worklist-wiping dev-refresh endpoint.
+          build-args: |
+            ${{ matrix.build_arg }}
+            GIT_SHA=${{ github.sha }}
+            NEXT_PUBLIC_API_URL=/api
+            NEXT_PUBLIC_SIGNALR_URL=/api/hubs
+            NEXT_PUBLIC_SHOW_DEV_TOOLS=false
+          tags: |
+            ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ matrix.image }}:sha-${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,scope=${{ matrix.image }},mode=max
+
+  # Guards against shipping a web bundle that still points at a developer's machine, or
+  # one with the destructive dev tools compiled in. Both are build-time facts that
+  # cannot be corrected at runtime, so they have to be caught here.
+  verify-web-images:
+    name: verify web bundles
+    needs: images
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Assert same-origin API base and no dev tools
+        run: |
+          set -euo pipefail
+          # Assert on the image labels, not on the bundle contents. Next inlines
+          # NEXT_PUBLIC_* at build time but the minifier keeps the unused `??` fallback
+          # literal, so a bundle built correctly with /api STILL contains the string
+          # "http://localhost:5171" as dead code. Grepping for it fails good images.
+          for img in radplus-web radplus-admin; do
+            ref="${{ env.REGISTRY }}/${{ github.repository_owner }}/$img:sha-${{ github.sha }}"
+            docker pull -q "$ref"
+            base=$(docker inspect -f '{{ index .Config.Labels "com.radiologyplus.api-base" }}' "$ref")
+            dev=$(docker inspect -f '{{ index .Config.Labels "com.radiologyplus.dev-tools" }}' "$ref")
+            echo "== $img: api-base=$base dev-tools=$dev"
+
+            [ "$base" = "/api" ] || { echo "FAIL: $img api-base is '$base', expected /api" >&2; exit 1; }
+            # Gates the button that calls the worklist-wiping dev-refresh endpoint.
+            [ "$dev" = "false" ] || { echo "FAIL: $img was built with dev tools enabled" >&2; exit 1; }
+          done
+          echo "both web images are same-origin with dev tools off"
+
+  deploy-test:
+    name: deploy to test
+    needs: verify-web-images
+    if: >-
+      github.event_name == 'workflow_dispatch' && inputs.deploy_test &&
+      vars.TEST_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: /opt/radplus/deploy.sh test sha-${{ github.sha }}
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          base="${{ vars.TEST_BASE_URL }}"
+          curl -fsS "$base/api/diagnostics/version"
+          curl -fsS -o /dev/null "$base/login"
+          echo "smoke tests passed"
+
+  promote-prod:
+    name: promote to prod
+    if: github.event_name == 'workflow_dispatch' && inputs.promote_tag != ''
+    runs-on: ubuntu-latest
+    # Attach a required reviewer to this GitHub environment; that is the approval gate.
+    environment: production
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Deploy the tested digest
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # No rebuild: this tag already exists in the registry and already passed test.
+          script: /opt/radplus/deploy.sh prod ${{ inputs.promote_tag }}

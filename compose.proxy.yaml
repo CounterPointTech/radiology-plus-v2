@@ -1,0 +1,54 @@
+# The shared reverse proxy. Runs as its own project so one instance serves every stack
+# on the host — it reaches them over the `radplus-edge` network, not through published
+# ports, so the stacks themselves publish nothing.
+#
+#   docker network create radplus-edge          # once per host
+#   docker compose -p radplus-proxy --env-file /opt/radplus/env/proxy.env \
+#                  -f compose.proxy.yaml up -d
+#
+# Hostnames and upstreams are per-environment; see env/example.proxy.env. Container
+# names carry the compose project prefix, so a test-stack upstream is
+# radplus-test-api-1 while prod's is radplus-prod-api-1.
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    # The only two ports open to the world on this host.
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account keys. Losing this volume means re-issuing every
+      # certificate, which Let's Encrypt rate-limits — keep it.
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      WEB_HOST: ${WEB_HOST:?WEB_HOST is required}
+      ADMIN_HOST: ${ADMIN_HOST:?ADMIN_HOST is required}
+      API_UPSTREAM: ${API_UPSTREAM:?API_UPSTREAM is required}
+      ADMINAPI_UPSTREAM: ${ADMINAPI_UPSTREAM:?ADMINAPI_UPSTREAM is required}
+      WEB_UPSTREAM: ${WEB_UPSTREAM:?WEB_UPSTREAM is required}
+      ADMIN_UPSTREAM: ${ADMIN_UPSTREAM:?ADMIN_UPSTREAM is required}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+      # Local/testing only: set to `local_certs` to use Caddy's internal CA instead of
+      # asking Let's Encrypt for a certificate it cannot issue for a private hostname.
+      ACME_STAGING_DIRECTIVE: ${ACME_STAGING_DIRECTIVE:-}
+      TZ: ${TZ:-America/New_York}
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-radplus-edge}
+
+volumes:
+  caddy_data:
+  caddy_config:

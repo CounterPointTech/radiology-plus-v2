@@ -79,6 +79,7 @@ services:
   api:
     <<: *dotnet-service
     image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-api:${TAG:-dev}
+    networks: [internal, edge]
     environment:
       <<: *dotnet-env
       # ASPNETCORE_HTTP_PORTS binds all interfaces. ASPNETCORE_URLS=http://localhost:N
@@ -99,6 +100,7 @@ services:
   adminapi:
     <<: *dotnet-service
     image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-adminapi:${TAG:-dev}
+    networks: [internal, edge]
     environment:
       <<: *dotnet-env
       ASPNETCORE_HTTP_PORTS: "5181"
@@ -132,7 +134,7 @@ services:
   web:
     image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-web:${TAG:-dev}
     restart: unless-stopped
-    networks: [internal]
+    networks: [internal, edge]
     environment:
       TZ: ${TZ:-America/New_York}
     depends_on: [api]
@@ -146,7 +148,7 @@ services:
   admin:
     image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-admin:${TAG:-dev}
     restart: unless-stopped
-    networks: [internal]
+    networks: [internal, edge]
     environment:
       TZ: ${TZ:-America/New_York}
     depends_on: [adminapi]
@@ -158,8 +160,18 @@ services:
       start_period: 20s
 
 networks:
+  # Stack-private. Postgres lives here and nowhere else.
   internal:
     driver: bridge
+
+  # Shared with the reverse proxy so one Caddy can serve all three stacks on a single
+  # host. Only the four browser-facing services join it. Create it once per host:
+  #
+  #     docker network create radplus-edge
+  #
+  edge:
+    external: true
+    name: ${EDGE_NETWORK:-radplus-edge}
 
 volumes:
   pgdata:

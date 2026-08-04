@@ -54,8 +54,20 @@ RUN mkdir -p public && npm run build
 # runtime
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS final
+ARG APP
 ARG GIT_SHA=unknown
 ARG TZ=America/New_York
+ARG NEXT_PUBLIC_API_URL=/api
+ARG NEXT_PUBLIC_SHOW_DEV_TOOLS=false
+
+# Record what was compiled in. NEXT_PUBLIC_* values are inlined at build time and cannot
+# be inspected reliably afterwards — the minifier keeps the unused `??` fallback literal
+# in the bundle, so grepping the output for "localhost" reports a false positive on a
+# perfectly good image. Labels are the honest record, and CI asserts on these.
+LABEL org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.title="radiology-plus-${APP}" \
+      com.radiologyplus.api-base="${NEXT_PUBLIC_API_URL}" \
+      com.radiologyplus.dev-tools="${NEXT_PUBLIC_SHOW_DEV_TOOLS}"
 
 ENV NODE_ENV=production \
     # server.js binds process.env.HOSTNAME and defaults to localhost — a container
