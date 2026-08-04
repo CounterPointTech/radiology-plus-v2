@@ -1,0 +1,85 @@
+# syntax=docker/dockerfile:1.7
+#
+# One Dockerfile, two images. Build from the REPO ROOT:
+#
+#   docker build -f docker/Dockerfile.next --build-arg APP=web   -t radplus-web:dev .
+#   docker build -f docker/Dockerfile.next --build-arg APP=admin -t radplus-admin:dev .
+#
+# APP must be `web` or `admin`.
+
+ARG NODE_IMAGE=node:20-bookworm-slim
+
+# ---------------------------------------------------------------------------
+# deps — package.json + lockfile only, so npm ci re-runs only on dependency changes
+# ---------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS deps
+ARG APP
+RUN test -n "${APP}" || (echo "ERROR: --build-arg APP=web|admin is required" >&2; exit 1)
+WORKDIR /app
+COPY apps/${APP}/package.json apps/${APP}/package-lock.json ./
+# `npm ci` strictly — never `npm ci || npm install`. The fallback masks lockfile drift,
+# and both lockfiles already carry the linux-x64 platform binaries (lightningcss,
+# @tailwindcss/oxide) that the Windows-resolved node_modules tree would not.
+RUN --mount=type=cache,target=/root/.npm npm ci
+
+# ---------------------------------------------------------------------------
+# build
+# ---------------------------------------------------------------------------
+FROM deps AS build
+ARG APP
+
+# Same-origin by default: the reverse proxy routes /api/* to the matching backend, so
+# one image is promotable dev -> test -> prod unchanged. These remain build args only
+# so a developer can still point a local image at an absolute URL when debugging.
+#
+# Do NOT set these to "" — apps/*/lib/api-client.ts calls the token-refresh endpoint on
+# the bare axios instance, so an empty base sends /auth/refresh to the Next server
+# instead of the API.
+ARG NEXT_PUBLIC_API_URL=/api
+ARG NEXT_PUBLIC_SIGNALR_URL=/api/hubs
+# Gates a button that calls the worklist-wiping dev-refresh endpoint. Never true here.
+ARG NEXT_PUBLIC_SHOW_DEV_TOOLS=false
+
+ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL} \
+    NEXT_PUBLIC_SIGNALR_URL=${NEXT_PUBLIC_SIGNALR_URL} \
+    NEXT_PUBLIC_SHOW_DEV_TOOLS=${NEXT_PUBLIC_SHOW_DEV_TOOLS} \
+    NEXT_TELEMETRY_DISABLED=1
+
+COPY apps/${APP}/ ./
+# apps/admin has no public/ at all and apps/web's holds only a README, but the runtime
+# stage copies public/ unconditionally — create it so one Dockerfile serves both apps.
+RUN mkdir -p public && npm run build
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS final
+ARG GIT_SHA=unknown
+ARG TZ=America/New_York
+
+ENV NODE_ENV=production \
+    # server.js binds process.env.HOSTNAME and defaults to localhost — a container
+    # bound to loopback is unreachable from the compose network, with no useful error.
+    HOSTNAME=0.0.0.0 \
+    PORT=3000 \
+    TZ=${TZ} \
+    NEXT_TELEMETRY_DISABLED=1 \
+    GIT_SHA=${GIT_SHA}
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl tzdata \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# `output: "standalone"` emits a self-contained server plus a minimal node_modules, but
+# it does NOT include .next/static or public/. Omit either copy and the page loads while
+# every JS and CSS chunk 404s.
+COPY --from=build --chown=node:node /app/.next/standalone ./
+COPY --from=build --chown=node:node /app/.next/static     ./.next/static
+COPY --from=build --chown=node:node /app/public           ./public
+
+USER node
+EXPOSE 3000
+
+CMD ["node", "server.js"]

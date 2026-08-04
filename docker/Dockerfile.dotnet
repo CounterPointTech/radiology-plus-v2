@@ -1,0 +1,101 @@
+# syntax=docker/dockerfile:1.7
+#
+# One Dockerfile, five images. Build from the REPO ROOT:
+#
+#   docker build -f docker/Dockerfile.dotnet --build-arg PROJECT=RadiologyPlus.API \
+#                -t radplus-api:dev .
+#
+# PROJECT must be one of: RadiologyPlus.API, RadiologyPlus.AdminApi,
+# RadiologyPlus.Service, RadiologyPlus.AdminService, RadiologyPlus.Migrator.
+
+# Pinned deliberately. global.json sets rollForward: latestFeature, which accepts a
+# HIGHER feature band but REJECTS a lower one — so if the floating `sdk:10.0` tag ever
+# resolves to 10.0.1xx, every build fails with an unhelpful SDK-resolution error.
+ARG SDK_IMAGE=mcr.microsoft.com/dotnet/sdk:10.0.203
+ARG RUNTIME_IMAGE=mcr.microsoft.com/dotnet/aspnet:10.0
+
+# ---------------------------------------------------------------------------
+# restore — identical for all five images, so this layer is built once and reused
+# ---------------------------------------------------------------------------
+FROM ${SDK_IMAGE} AS restore
+WORKDIR /src
+
+# Only the project files first: this layer re-runs solely when a .csproj or the
+# solution changes, not when source changes.
+COPY global.json Directory.Build.props RadiologyPlus.sln ./
+COPY src/RadiologyPlus.API/RadiologyPlus.API.csproj                     src/RadiologyPlus.API/
+COPY src/RadiologyPlus.AdminApi/RadiologyPlus.AdminApi.csproj           src/RadiologyPlus.AdminApi/
+COPY src/RadiologyPlus.Service/RadiologyPlus.Service.csproj             src/RadiologyPlus.Service/
+COPY src/RadiologyPlus.AdminService/RadiologyPlus.AdminService.csproj   src/RadiologyPlus.AdminService/
+COPY src/RadiologyPlus.Migrator/RadiologyPlus.Migrator.csproj           src/RadiologyPlus.Migrator/
+COPY src/RadiologyPlus.Common/RadiologyPlus.Common.csproj               src/RadiologyPlus.Common/
+COPY src/RadiologyPlus.Core/RadiologyPlus.Core.csproj                   src/RadiologyPlus.Core/
+COPY src/RadiologyPlus.Data/RadiologyPlus.Data.csproj                   src/RadiologyPlus.Data/
+COPY src/RadiologyPlus.Notifications/RadiologyPlus.Notifications.csproj src/RadiologyPlus.Notifications/
+COPY src/RadiologyPlus.NovaradAuth/RadiologyPlus.NovaradAuth.csproj     src/RadiologyPlus.NovaradAuth/
+COPY src/RadiologyPlus.Scripting/RadiologyPlus.Scripting.csproj         src/RadiologyPlus.Scripting/
+COPY src/RadiologyPlus.WebShared/RadiologyPlus.WebShared.csproj         src/RadiologyPlus.WebShared/
+COPY tests/RadiologyPlus.NovaradAuth.Tests/RadiologyPlus.NovaradAuth.Tests.csproj tests/RadiologyPlus.NovaradAuth.Tests/
+
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore RadiologyPlus.sln
+
+# ---------------------------------------------------------------------------
+# publish
+# ---------------------------------------------------------------------------
+FROM restore AS publish
+ARG PROJECT
+RUN test -n "${PROJECT}" || (echo "ERROR: --build-arg PROJECT=... is required" >&2; exit 1)
+
+COPY src/ src/
+
+# Framework-dependent (not self-contained): the runtime lives in the base image, so
+# the layer is shared across all five images instead of duplicated five times.
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish "src/${PROJECT}/${PROJECT}.csproj" \
+        --configuration Release \
+        --no-restore \
+        --output /app/publish
+
+# ---------------------------------------------------------------------------
+# runtime
+# ---------------------------------------------------------------------------
+FROM ${RUNTIME_IMAGE} AS final
+ARG PROJECT
+ARG GIT_SHA=unknown
+# Eastern time: the app's wall-clock billing windows and the worklist projector's
+# lookback/prune windows read local time, and containers default to UTC. Getting this
+# wrong silently shifts every reconciliation window by 4-5 hours.
+ARG TZ=America/New_York
+
+ENV ASPNETCORE_ENVIRONMENT=Production \
+    DOTNET_ENVIRONMENT=Production \
+    TZ=${TZ} \
+    GIT_SHA=${GIT_SHA}
+
+# libldap2: System.DirectoryServices.Protocols P/Invokes it for federated auth. Without
+#           it you get a DllNotFoundException at the FIRST LDAP LOGIN — not at startup —
+#           so it presents as an auth bug rather than a packaging one.
+#           The base image is Ubuntu Noble (not Debian), where OpenLDAP 2.6 ships as
+#           `libldap2`; the Debian-style `libldap-2.5-0` does not exist here.
+# curl:     used by the compose healthchecks, and worth having when you need to prove
+#           connectivity to Novarad or M*Modal from inside a container.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libldap2 curl tzdata ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=publish /app/publish .
+
+# An ARG cannot be expanded in an exec-form ENTRYPOINT, and symlinking the dll breaks
+# .deps.json resolution. A generated launcher keeps `docker run <image>` working while
+# still forwarding arguments — which is what makes the Migrator's subcommands natural:
+#   docker run --rm radplus-migrator init-tenant --name "Acme"
+RUN printf '#!/bin/sh\nexec dotnet /app/%s.dll "$@"\n' "${PROJECT}" > /usr/local/bin/radplus \
+ && chmod +x /usr/local/bin/radplus
+
+# Predefined in the .NET base images (uid 1654). Ports are >1024, so no capabilities
+# are needed to bind them.
+USER $APP_UID
+
+ENTRYPOINT ["/usr/local/bin/radplus"]

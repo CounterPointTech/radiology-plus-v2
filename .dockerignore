@@ -1,0 +1,41 @@
+# Allow-list, not deny-list.
+#
+# A deny-list that misses one directory ships it to the daemon on every build, and
+# two directories here make that unacceptable rather than merely slow:
+#
+#   References/  ~1.4 GB of read-only prototype and vendor schema material.
+#   .claude/     plaintext dev secrets (DB password, JWT secret, encryption key).
+#
+# Anything in the build context can end up in an image layer, and a later `RUN rm`
+# does not remove it from the layer — it would ship to the registry. So: deny
+# everything, then name what a build actually needs.
+
+*
+
+# --- what the builds need ---
+!src/
+!apps/
+!tests/
+!RadiologyPlus.sln
+!global.json
+!Directory.Build.props
+
+# --- re-exclude noise inside the allowed trees (last match wins) ---
+**/bin/
+**/obj/
+**/node_modules/
+**/.next/
+**/*.tsbuildinfo
+**/*.user
+
+# Never let host-local config or secrets into a layer. appsettings.json ships
+# (it carries log levels and non-secret defaults); the Development/Local overrides
+# do not exist in git but may exist on disk.
+**/appsettings.Development.json
+**/appsettings.Local.json
+**/.env
+**/.env.*
+!**/.env.example
+
+# .git is excluded by the `*` above. Pass the commit in explicitly instead:
+#   docker build --build-arg GIT_SHA=$(git rev-parse --short HEAD) ...
