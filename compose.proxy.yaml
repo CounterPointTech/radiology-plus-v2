@@ -14,12 +14,19 @@ services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
-    # The only two ports open to the world on this host.
+    # The only ports open to the world on this host. ADMIN_HTTPS_PORT exists for hosts
+    # with no DNS, where the admin console is served on the same IP as the clinical app
+    # but on a second port (WEB_HOST=10.0.0.5, ADMIN_HOST=10.0.0.5:8443). With real
+    # hostnames both sites share 443 and this extra port is simply unused.
     ports:
       - "${HTTP_PORT:-80}:80"
       - "${HTTPS_PORT:-443}:443"
+      - "${ADMIN_HTTPS_PORT:-8443}:8443"
     volumes:
       - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      # Purchased certificates, when TLS_DIRECTIVE points at them. The directory may
+      # be empty; keep it 700 and the key 600.
+      - ./certs:/certs:ro
       # Certificates and ACME account keys. Losing this volume means re-issuing every
       # certificate, which Let's Encrypt rate-limits — keep it.
       - caddy_data:/data
@@ -35,6 +42,10 @@ services:
       # Local/testing only: set to `local_certs` to use Caddy's internal CA instead of
       # asking Let's Encrypt for a certificate it cannot issue for a private hostname.
       ACME_STAGING_DIRECTIVE: ${ACME_STAGING_DIRECTIVE:-}
+      # Bare-IP hosts only: `default_sni 10.0.0.5`. See the Caddyfile.
+      DEFAULT_SNI_DIRECTIVE: ${DEFAULT_SNI_DIRECTIVE:-}
+      # Purchased certificate: `tls /certs/cert.pem /certs/key.pem`. Empty = automatic.
+      TLS_DIRECTIVE: ${TLS_DIRECTIVE:-}
       TZ: ${TZ:-America/New_York}
     networks: [edge]
     healthcheck:

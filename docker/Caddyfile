@@ -14,6 +14,10 @@
 	# ACME_CA is set to the internal CA so *.localhost gets a self-signed cert.
 	email {$ACME_EMAIL:admin@example.com}
 	{$ACME_STAGING_DIRECTIVE}
+	# A host with no DNS is reached by bare IP, and a client connecting to an IP sends
+	# no SNI, so Caddy cannot pick a certificate and the handshake fails with
+	# "internal error". Set to `default_sni <ip>` on such hosts; leave empty otherwise.
+	{$DEFAULT_SNI_DIRECTIVE}
 }
 
 # Shared behaviour for one environment: import stack <api-upstream> <web-upstream>
@@ -56,10 +60,15 @@
 
 # --- clinical app -----------------------------------------------------------
 {$WEB_HOST} {
+	# Empty by default, so Caddy issues its own certificate (Let's Encrypt, or the
+	# internal CA under local_certs). For a purchased certificate set it to
+	# `tls /certs/cert.pem /certs/key.pem` — compose.proxy.yaml mounts ./certs there.
+	{$TLS_DIRECTIVE}
 	import stack {$API_UPSTREAM} {$WEB_UPSTREAM}
 }
 
 # --- admin console ----------------------------------------------------------
 {$ADMIN_HOST} {
+	{$TLS_DIRECTIVE}
 	import stack {$ADMINAPI_UPSTREAM} {$ADMIN_UPSTREAM}
 }
