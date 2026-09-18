@@ -55,9 +55,18 @@ PREVIOUS="$(compose config 2>/dev/null | grep -oP 'radplus-api:\K\S+' | head -1 
 echo "==> deploying $PROJECT at tag $TAG (previous: ${PREVIOUS:-unknown})"
 export TAG
 
-# Fail before touching the running stack if a tag does not exist in the registry.
-echo "==> pulling images"
-compose pull --quiet
+# Fail before touching the running stack if a tag exists neither locally nor in the
+# registry. Images built on this host (build-images.sh) are used as-is; anything
+# else is pulled, so the same script serves a registry-fed stack and an air-gapped one.
+echo "==> resolving images"
+for image in $(compose config --images); do
+    if docker image inspect "$image" >/dev/null 2>&1; then
+        echo "    local    $image"
+    else
+        echo "    pulling  $image"
+        docker pull --quiet "$image" >/dev/null
+    fi
+done
 
 echo "==> applying migrations and starting services"
 # The migrator runs to completion first; the four hosts depend on
@@ -85,6 +94,10 @@ fi
 
 echo "==> pruning dangling images"
 docker image prune -f >/dev/null
+
+# Record the tag in the env file so a later plain `compose up` keeps this version
+# instead of silently reverting to whatever the file said before.
+sed -i "s/^TAG=.*/TAG=$TAG/" "$ENV_FILE"
 
 echo "==> $PROJECT is running tag $TAG"
 echo "    roll back with: $0 $STACK ${PREVIOUS:-<previous-tag>}"
