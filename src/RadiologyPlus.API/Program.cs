@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using RadiologyPlus.API.Endpoints;
+using RadiologyPlus.Common.Configuration;
 using RadiologyPlus.Common.Encryption;
 using RadiologyPlus.Common.Security;
 using RadiologyPlus.API.Hubs;
@@ -22,9 +23,13 @@ using RadiologyPlus.Data.Tenancy;
 using RadiologyPlus.Data.TechValidation;
 using RadiologyPlus.NovaradAuth;
 using RadiologyPlus.WebShared.Auth;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Die now, with one readable message, rather than on the first request.
+RequiredSettings.Validate(builder.Configuration, requireJwt: true);
 
 builder.Host.UseSerilog((ctx, sp, cfg) => cfg
     .ReadFrom.Configuration(ctx.Configuration)
@@ -125,7 +130,13 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyHeader()
     .AllowCredentials()));
 builder.Services.AddSignalR();
-builder.Services.AddHealthChecks();
+// /health is liveness (process up); /health/ready also proves the app database
+// answers. Compose probes /health so a database blip never restarts the container.
+builder.Services.AddHealthChecks()
+    .AddNpgSql(
+        sp => sp.GetRequiredService<IOptions<AppDbOptions>>().Value.ConnectionString,
+        name: "appdb",
+        tags: ["ready"]);
 
 var app = builder.Build();
 
@@ -140,10 +151,15 @@ app.UseAuthentication();
 app.UseTenantAndUserContext();
 app.UseAuthorization();
 
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health", new() { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
 app.MapAuthEndpoints();
 app.MapDiagnosticsEndpoints();
-app.MapTechValidationEndpoints();
+// The projector-kick endpoint is a diagnostics tool: never mapped in production
+// unless an operator opts in explicitly (TechValidation:EnableDevRefresh=true).
+app.MapTechValidationEndpoints(
+    enableDevRefresh: app.Environment.IsDevelopment()
+        || app.Configuration.GetValue<bool>("TechValidation:EnableDevRefresh"));
 app.MapBillingEndpoints();
 app.MapAnnouncementsEndpoints();
 app.MapHub<MonitoringHub>("/hubs/monitoring");

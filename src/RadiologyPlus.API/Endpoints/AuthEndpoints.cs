@@ -42,7 +42,7 @@ public static class AuthEndpoints
             return Results.BadRequest(new { error = "Facility, username, and password are required." });
         }
 
-        var tenant = await tenants.GetByFacilityCodeAsync(req.Facility, ct);
+        var tenant = await tenants.GetByFacilityCodeAsync(req.Facility.Trim(), ct);
         if (tenant is null)
         {
             await audit.WriteFailureAsync(Guid.Empty, req.Username, AccessAction.Login, "Unknown facility", http, ct);

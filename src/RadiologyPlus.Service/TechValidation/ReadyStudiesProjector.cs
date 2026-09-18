@@ -11,8 +11,12 @@ public sealed class ReadyStudiesProjectorOptions
 {
     /// <summary>How often to re-project, per tenant. Default: 60s.</summary>
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(60);
-    /// <summary>How far back to look at last_image_processed_date. Default: 7 days.</summary>
-    public TimeSpan LookbackWindow { get; init; } = TimeSpan.FromDays(7);
+    /// <summary>
+    /// How far back to look at last_image_processed_date. Default: 120 days. The
+    /// old 7-day default projected nothing on a quiet or stale database, and an empty
+    /// projection then pruned the entire worklist within <see cref="PruneAge"/>.
+    /// </summary>
+    public TimeSpan LookbackWindow { get; init; } = TimeSpan.FromDays(120);
     /// <summary>Prune ready_studies rows whose projected_at is older than this AND no open validation. Default: 4 hours.</summary>
     public TimeSpan PruneAge { get; init; } = TimeSpan.FromHours(4);
 }
@@ -90,11 +94,17 @@ public sealed class ReadyStudiesProjector : BackgroundService
                 var repo = tsp.GetRequiredService<ITechValidationRepository>();
 
                 var studies = await reader.ReadReadyStudiesAsync(_options.LookbackWindow, ct);
-                if (studies.Count > 0)
+                if (studies.Count == 0)
                 {
-                    await repo.UpsertReadyStudiesAsync(t.TenantId, studies, ct);
+                    // Nothing projected means nothing got a fresh projected_at, so pruning
+                    // would eventually delete every row. Keep what we have and say so.
+                    _logger.LogWarning(
+                        "ReadyStudiesProjector read 0 ready studies for tenant {Tenant} in the last {Window}; leaving the worklist untouched.",
+                        t.Code, _options.LookbackWindow);
+                    continue;
                 }
 
+                await repo.UpsertReadyStudiesAsync(t.TenantId, studies, ct);
                 await repo.PruneStaleReadyStudiesAsync(t.TenantId, DateTimeOffset.UtcNow.Subtract(_options.PruneAge), ct);
 
                 _logger.LogInformation(

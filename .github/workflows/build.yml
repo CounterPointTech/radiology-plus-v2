@@ -20,7 +20,7 @@ jobs:
       - name: Build
         run: dotnet build RadiologyPlus.sln --configuration Release --no-restore
       - name: Test
-        run: dotnet test RadiologyPlus.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" || echo "no tests yet"
+        run: dotnet test RadiologyPlus.sln --configuration Release --no-build --logger "trx;LogFileName=test-results.trx"
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4

@@ -10,7 +10,15 @@ namespace RadiologyPlus.API.Endpoints;
 
 public static class TechValidationEndpoints
 {
-    public static IEndpointRouteBuilder MapTechValidationEndpoints(this IEndpointRouteBuilder app)
+    /// <summary>
+    /// Default projection window, shared with the Service worker's projector. A short
+    /// window on a quiet or stale database projects nothing, and an empty projection
+    /// used to prune the whole worklist — so this is load-bearing, not tuning.
+    /// </summary>
+    public const int DefaultLookbackDays = 120;
+
+    public static IEndpointRouteBuilder MapTechValidationEndpoints(
+        this IEndpointRouteBuilder app, bool enableDevRefresh = false)
     {
         var group = app.MapGroup("/tech-validation")
             .WithTags("TechValidation")
@@ -33,8 +41,13 @@ public static class TechValidationEndpoints
         group.MapPost("/studies/merge", MergeStudiesAsync).WithName("TechStudyMerge");
 
         // Dev/ops helper: kick the projector once without running the Service worker.
-        // NRS-only — this exists for smoke-testing and on-call diagnostics.
-        group.MapPost("/dev/refresh", DevRefreshAsync).WithName("TechDevRefresh");
+        // NRS-only, and only mapped when the host opts in (Development, or
+        // TechValidation:EnableDevRefresh=true) — a bearer token alone must never be
+        // enough to reach it on a production stack.
+        if (enableDevRefresh)
+        {
+            group.MapPost("/dev/refresh", DevRefreshAsync).WithName("TechDevRefresh");
+        }
 
         return app;
     }
@@ -50,22 +63,21 @@ public static class TechValidationEndpoints
         var user = currentUser.Require();
         if (user.Role != Role.NRS) return Results.Forbid();
 
-        // Defaults to the projector's 7-day window; overridable for diagnostics
-        // and for testing against datasets whose newest study predates the
-        // 7-day window (e.g. a restored DB copy on an older snapshot).
-        var window = TimeSpan.FromDays(Math.Clamp(lookbackDays ?? 7, 1, 3650));
+        // Same default window as the projector; overridable for diagnostics.
+        var window = TimeSpan.FromDays(Math.Clamp(lookbackDays ?? DefaultLookbackDays, 1, 3650));
         var studies = await reader.ReadReadyStudiesAsync(window, ct);
-        if (studies.Count > 0)
+        if (studies.Count == 0)
         {
-            await repo.UpsertReadyStudiesAsync(user.TenantId, studies, ct);
+            // Nothing projected means nothing was refreshed, so pruning would delete
+            // every row. That is the failure mode that wiped the worklist; refuse.
+            return Results.Ok(new { projected = 0, pruned = false, lookbackDays = window.TotalDays });
         }
-        // Also prune rows the projector didn't touch this pass (studies that have
-        // moved past status=0 in PACS since they were last projected). The Service
-        // worker normally does this every poll; dev/refresh mirrors the behavior so
-        // the worklist stays clean even when the worker isn't running locally.
+        await repo.UpsertReadyStudiesAsync(user.TenantId, studies, ct);
+        // Prune rows this pass did not touch (studies that moved past status=0 in
+        // PACS since they were last projected), mirroring the Service worker.
         await repo.PruneStaleReadyStudiesAsync(
             user.TenantId, DateTimeOffset.UtcNow.AddMinutes(-1), ct);
-        return Results.Ok(new { projected = studies.Count, lookbackDays = window.TotalDays });
+        return Results.Ok(new { projected = studies.Count, pruned = true, lookbackDays = window.TotalDays });
     }
 
     [Authorize]

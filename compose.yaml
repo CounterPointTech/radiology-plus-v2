@@ -113,10 +113,9 @@ services:
       retries: 5
       start_period: 30s
 
-  # The worklist projector. Its LookbackWindow default is 7 days, on which it projects
-  # nothing and then prunes the entire worklist within four hours — so this value is
-  # load-bearing, not tuning. (Phase 2 moves the safe default into the source so an
-  # env-file omission can no longer do that.)
+  # The worklist projector. The source default for LookbackWindow is now 120 days and
+  # an empty projection no longer prunes, so omitting this is safe; it stays here as
+  # the one knob an operator is likely to want.
   service:
     <<: *dotnet-service
     image: ${IMAGE_REGISTRY:-ghcr.io/counterpointtech}/radplus-service:${TAG:-dev}

@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
 using RadiologyPlus.AdminApi.Endpoints;
+using RadiologyPlus.Common.Configuration;
 using RadiologyPlus.Common.Encryption;
 using RadiologyPlus.Common.Security;
 using RadiologyPlus.Core.Audit;
@@ -20,9 +21,13 @@ using RadiologyPlus.Notifications.Channels;
 using RadiologyPlus.NovaradAuth;
 using RadiologyPlus.Scripting;
 using RadiologyPlus.WebShared.Auth;
+using Microsoft.Extensions.Options;
 using Serilog;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Die now, with one readable message, rather than on the first request.
+RequiredSettings.Validate(builder.Configuration, requireJwt: true);
 
 builder.Host.UseSerilog((ctx, sp, cfg) => cfg
     .ReadFrom.Configuration(ctx.Configuration)
@@ -116,7 +121,13 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyMethod()
     .AllowAnyHeader()
     .AllowCredentials()));
-builder.Services.AddHealthChecks();
+// /health is liveness (process up); /health/ready also proves the app database
+// answers. Compose probes /health so a database blip never restarts the container.
+builder.Services.AddHealthChecks()
+    .AddNpgSql(
+        sp => sp.GetRequiredService<IOptions<AppDbOptions>>().Value.ConnectionString,
+        name: "appdb",
+        tags: ["ready"]);
 
 var app = builder.Build();
 
@@ -131,7 +142,8 @@ app.UseAuthentication();
 app.UseTenantAndUserContext();
 app.UseAuthorization();
 
-app.MapHealthChecks("/health");
+app.MapHealthChecks("/health", new() { Predicate = _ => false });
+app.MapHealthChecks("/health/ready", new() { Predicate = r => r.Tags.Contains("ready") });
 app.MapAuthEndpoints();
 app.MapDiagnosticsEndpoints();
 app.MapScriptsEndpoints();

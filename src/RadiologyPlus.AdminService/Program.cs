@@ -1,6 +1,7 @@
 using System.Globalization;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Hosting.WindowsServices;
+using RadiologyPlus.Common.Configuration;
 using RadiologyPlus.Common.Encryption;
 using RadiologyPlus.Core.Data;
 using RadiologyPlus.Core.Identity;
@@ -21,6 +22,9 @@ Log.Logger = new LoggerConfiguration()
 try
 {
     var builder = Host.CreateApplicationBuilder(args);
+
+    // Die now, with one readable message, rather than on the first poll.
+    RequiredSettings.Validate(builder.Configuration, requireJwt: false);
 
     builder.Services.AddWindowsService(o => o.ServiceName = "RadiologyPlus.AdminService");
     builder.Services.AddSerilog((sp, lc) => lc
@@ -69,6 +73,8 @@ try
 catch (Exception ex) when (ex is InvalidOperationException or HostAbortedException)
 {
     Log.Fatal(ex, "AdminService terminated unexpectedly.");
+    // A non-zero exit is what lets compose/systemd see this as a crash, not a clean stop.
+    Environment.ExitCode = 1;
 }
 finally
 {
