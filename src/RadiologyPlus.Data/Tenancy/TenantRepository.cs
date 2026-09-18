@@ -14,7 +14,7 @@ public sealed class TenantRepository : ITenantRepository
     {
         await using var conn = (NpgsqlConnection)await _db.OpenUnscopedAsync(cancellationToken);
         await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT tenant_id, code, display_name, is_active, created_at FROM tenancy.tenants WHERE code = @c";
+        cmd.CommandText = "SELECT tenant_id, code, display_name, is_active, created_at FROM tenancy.tenants WHERE code = @c::citext";
         cmd.Parameters.AddWithValue("c", code);
         await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
         if (!await reader.ReadAsync(cancellationToken)) return null;
@@ -64,7 +64,9 @@ public sealed class TenantRepository : ITenantRepository
             SELECT t.tenant_id, t.code, t.display_name, t.is_active, t.created_at
             FROM tenancy.tenants t
             JOIN tenancy.facilities f ON f.tenant_id = t.tenant_id
-            WHERE f.code = @c AND t.is_active AND f.is_active
+            -- f.code is citext, but a text-typed parameter would make Postgres pick the
+            -- text = text operator and compare case-sensitively; cast to keep it citext.
+            WHERE f.code = @c::citext AND t.is_active AND f.is_active
             LIMIT 1
             """;
         cmd.Parameters.AddWithValue("c", facilityCode);
