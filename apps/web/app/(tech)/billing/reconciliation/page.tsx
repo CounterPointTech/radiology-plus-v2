@@ -10,7 +10,14 @@ import {
   Info,
   Play,
 } from "lucide-react";
-import { Fragment, useCallback, useMemo, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { ReportView } from "@/components/billing/report-view";
 import { Badge } from "@/components/ui/badge";
@@ -265,6 +272,14 @@ function ResultView({ run }: { run: ReconciliationRun }) {
     [run.runId],
   );
 
+  // Mirror of detailCache for callbacks that only need to *read* it. Depending on
+  // the state value instead would give toggleRow/expandAll a new identity on every
+  // settled fetch, re-rendering all ~1,000 rows each time.
+  const detailCacheRef = useRef(detailCache);
+  useEffect(() => {
+    detailCacheRef.current = detailCache;
+  }, [detailCache]);
+
   const toggleRow = useCallback(
     (physicianId: number, cptCode: string, siteCode: string) => {
       const key = lineKey(physicianId, cptCode, siteCode);
@@ -275,28 +290,55 @@ function ResultView({ run }: { run: ReconciliationRun }) {
         } else {
           next.add(key);
           // Fetch lazily on first expand. Cached results stay cached.
-          if (!detailCache.has(key)) {
+          if (!detailCacheRef.current.has(key)) {
             void fetchDetail(physicianId, cptCode, siteCode);
           }
         }
         return next;
       });
     },
-    [detailCache, fetchDetail],
+    [fetchDetail],
   );
 
-  const expandAll = useCallback(() => {
+  // Expand all pulls the WHOLE run's drill-down in a single request.
+  //
+  // It used to call fetchDetail once per line. On a month-sized run that is ~1,080
+  // simultaneous requests; the browser runs six per origin, so the rest sat in the
+  // queue until they blew the 30s client timeout and every row showed an error.
+  // One request, one state update, one re-render.
+  const [expandAllLoading, setExpandAllLoading] = useState(false);
+
+  const expandAll = useCallback(async () => {
     setExpandedKeys(new Set(visibleKeys));
-    // Fire fetches for anything not yet cached.
-    for (const g of visibleGroups) {
-      for (const line of g.lines) {
-        const key = lineKey(g.novaradPhysicianId, line.cptCode, line.siteCode);
-        if (!detailCache.has(key)) {
-          void fetchDetail(g.novaradPhysicianId, line.cptCode, line.siteCode);
+    setExpandAllLoading(true);
+    try {
+      const data = await billingApi.reconciliationAllDetail({ runId: run.runId });
+      setDetailCache((prev) => {
+        const next = new Map(prev);
+        for (const g of data.groups) {
+          next.set(lineKey(g.physicianId, g.cptCode, g.siteCode), {
+            loading: false,
+            rows: g.rows,
+          });
         }
-      }
+        return next;
+      });
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Couldn't load detail.";
+      // Surface the failure on the rows themselves so the reviewer sees which
+      // lines have no detail, rather than a silent set of empty expanders.
+      setDetailCache((prev) => {
+        const next = new Map(prev);
+        for (const key of visibleKeys) {
+          if (!next.has(key)) next.set(key, { loading: false, error: message });
+        }
+        return next;
+      });
+    } finally {
+      setExpandAllLoading(false);
     }
-  }, [detailCache, fetchDetail, visibleGroups, visibleKeys]);
+  }, [run.runId, visibleKeys]);
 
   const collapseAll = useCallback(() => {
     setExpandedKeys(new Set());
@@ -330,6 +372,7 @@ function ResultView({ run }: { run: ReconciliationRun }) {
             setPhysicianFilter={setPhysicianFilter}
             allExpanded={allExpanded}
             anyVisible={visibleKeys.length > 0}
+            expandAllLoading={expandAllLoading}
             onExpandAll={expandAll}
             onCollapseAll={collapseAll}
           />
@@ -366,6 +409,7 @@ function ResultControls({
   setPhysicianFilter,
   allExpanded,
   anyVisible,
+  expandAllLoading,
   onExpandAll,
   onCollapseAll,
 }: {
@@ -375,6 +419,7 @@ function ResultControls({
   setPhysicianFilter: (next: number | "all") => void;
   allExpanded: boolean;
   anyVisible: boolean;
+  expandAllLoading: boolean;
   onExpandAll: () => void;
   onCollapseAll: () => void;
 }) {
@@ -431,6 +476,7 @@ function ResultControls({
           size="sm"
           onClick={allExpanded ? onCollapseAll : onExpandAll}
           disabled={!anyVisible}
+          loading={expandAllLoading}
           className="h-10"
         >
           {allExpanded ? (

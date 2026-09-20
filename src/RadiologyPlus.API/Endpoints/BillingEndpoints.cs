@@ -69,6 +69,7 @@ public static class BillingEndpoints
         group.MapGet("/reconciliation/unmapped", UnmappedCodesAsync).WithName("BillingReconciliationUnmapped");
         group.MapPost("/reconciliation/run", RunReconciliationAsync).WithName("BillingReconciliationRun");
         group.MapGet("/reconciliation/{runId:long}/detail", ReconciliationLineDetailAsync).WithName("BillingReconciliationLineDetail");
+        group.MapGet("/reconciliation/{runId:long}/detail/all", ReconciliationAllDetailAsync).WithName("BillingReconciliationAllDetail");
         group.MapGet("/reconciliation/{runId:long}/export", ExportReconciliationAsync).WithName("BillingReconciliationExport");
         group.MapGet("/reconciliation/report/{reportId:long}", GetReportFullAsync).WithName("BillingReportFull");
 
@@ -304,6 +305,76 @@ public static class BillingEndpoints
             reportCount = reportIds.Count,
             rows,
         });
+    }
+
+    /// <summary>
+    /// Whole-run drill-down: every line's detail rows in one response.
+    /// </summary>
+    /// <remarks>
+    /// "Expand all" on the reconciliation page used to call the single-line endpoint
+    /// once per line — ~1,080 concurrent requests on a month-sized run. The browser
+    /// runs six per origin, so the rest queued past the client's 30s timeout and the
+    /// whole page failed. The work itself is small (a month is ~4,300 detail rows),
+    /// so we do it as one Novarad query over the union of report ids and group the
+    /// rows back per line here.
+    /// </remarks>
+    [Authorize]
+    private static async Task<IResult> ReconciliationAllDetailAsync(
+        long runId,
+        ICurrentUser currentUser,
+        IBillingRepository repo,
+        INovaradReportsReader reader,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessBilling()) return Results.Forbid();
+
+        var lines = await repo.GetReconciliationRunLineReportIdsAsync(user.TenantId, runId, ct);
+        if (lines.Count == 0)
+        {
+            // No lines is indistinguishable from "run not visible to this tenant" at
+            // this layer, and both mean the same thing to the caller: nothing to show.
+            return Results.Ok(new { runId, lineCount = 0, groups = Array.Empty<object>() });
+        }
+
+        // A report can be credited to more than one line (bundle components), so the
+        // union is distinct — we must not ask Novarad for the same report twice.
+        var distinctIds = new HashSet<long>();
+        foreach (var line in lines)
+        {
+            foreach (var id in line.ReportIds) distinctIds.Add(id);
+        }
+
+        var allRows = distinctIds.Count == 0
+            ? Array.Empty<ReconciliationDetailRow>()
+            : (IReadOnlyList<ReconciliationDetailRow>)await reader.ReadReportDetailsAsync(
+                distinctIds.ToArray(), ct);
+
+        // ReadReportDetailsAsync is DISTINCT ON (report_id), so this is 1:1.
+        var byReportId = new Dictionary<long, ReconciliationDetailRow>(allRows.Count);
+        foreach (var row in allRows) byReportId[row.ReportId] = row;
+
+        var groups = new List<object>(lines.Count);
+        foreach (var line in lines)
+        {
+            var rows = new List<ReconciliationDetailRow>(line.ReportIds.Count);
+            foreach (var id in line.ReportIds)
+            {
+                // A report id with no row means the report vanished from Novarad
+                // since the run was persisted. Skip it rather than emit a null hole.
+                if (byReportId.TryGetValue(id, out var row)) rows.Add(row);
+            }
+            groups.Add(new
+            {
+                physicianId = line.NovaradPhysicianId,
+                cptCode     = line.CptCode,
+                siteCode    = line.SiteCode,
+                reportCount = line.ReportIds.Count,
+                rows,
+            });
+        }
+
+        return Results.Ok(new { runId, lineCount = lines.Count, groups });
     }
 
     [Authorize]

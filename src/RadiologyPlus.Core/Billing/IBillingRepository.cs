@@ -320,6 +320,24 @@ public interface IBillingRepository
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Return the <c>novarad_report_ids</c> for EVERY line of a run in one read.
+    /// <para>
+    /// This is the batch counterpart to
+    /// <see cref="GetReconciliationLineReportIdsAsync"/>. Expanding the whole
+    /// drill-down used to mean one HTTP round trip and one query per line — on a
+    /// month-sized run that is ~1,000 concurrent requests, which the browser
+    /// serializes six at a time until they exceed the client timeout. Reading every
+    /// line at once lets the caller resolve the entire drill-down with a single
+    /// <see cref="INovaradReportsReader.ReadReportDetailsAsync"/> call.
+    /// </para>
+    /// Empty list when the run has no lines or doesn't belong to the tenant.
+    /// </summary>
+    Task<IReadOnlyList<ReconciliationLineReportIds>> GetReconciliationRunLineReportIdsAsync(
+        Guid tenantId,
+        long runId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Re-materialize a previously-persisted reconciliation run + its full line items
     /// so it can be re-served (e.g. for the xlsx export). Returns null when the run
     /// doesn't belong to the tenant (or doesn't exist). Read-only.

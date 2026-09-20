@@ -425,6 +425,21 @@ export interface ReconciliationLineDetailResponse {
   rows: ReconciliationDetailRow[];
 }
 
+export interface ReconciliationDetailGroup {
+  physicianId: number;
+  cptCode: string;
+  siteCode: string;
+  reportCount: number;
+  rows: ReconciliationDetailRow[];
+}
+
+/** Every line's drill-down for a run, in one response — backs "Expand all". */
+export interface ReconciliationAllDetailResponse {
+  runId: number;
+  lineCount: number;
+  groups: ReconciliationDetailGroup[];
+}
+
 export interface UnmappedFacilityBreakdown {
   siteCode: string;
   facilityId: number | null;

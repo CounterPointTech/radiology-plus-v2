@@ -2019,6 +2019,44 @@ public sealed class BillingRepository : IBillingRepository
         return ((long[])raw).ToArray();
     }
 
+    public async Task<IReadOnlyList<ReconciliationLineReportIds>> GetReconciliationRunLineReportIdsAsync(
+        Guid tenantId,
+        long runId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // Same rows as GetReconciliationLineReportIdsAsync, without the per-line
+        // predicate. Ordered so the response is stable between calls.
+        cmd.CommandText = """
+            SELECT novarad_physician_id, cpt_code, site_code, novarad_report_ids
+            FROM billing.reconciliation_line_items
+            WHERE tenant_id = @t
+              AND run_id    = @run
+            ORDER BY novarad_physician_id, cpt_code, site_code
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("run", runId);
+
+        var result = new List<ReconciliationLineReportIds>();
+        await using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            // novarad_report_ids is NOT NULL in practice but a bundle collapse can
+            // leave it empty; treat NULL and empty the same way the single-line
+            // endpoint does — a legitimate line with no drill-down rows.
+            var ids = reader.IsDBNull(3)
+                ? Array.Empty<long>()
+                : reader.GetFieldValue<long[]>(3);
+            result.Add(new ReconciliationLineReportIds(
+                NovaradPhysicianId: reader.GetInt64(0),
+                CptCode:            reader.GetString(1),
+                SiteCode:           reader.GetString(2),
+                ReportIds:          ids));
+        }
+        return result;
+    }
+
     public async Task<ReconciliationRun?> GetRunWithLinesAsync(
         Guid tenantId,
         long runId,

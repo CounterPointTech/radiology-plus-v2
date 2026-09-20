@@ -19,6 +19,7 @@ import type {
   PatientSearchResult,
   ReportContent,
   ReadyStudy,
+  ReconciliationAllDetailResponse,
   ReconciliationLineDetailResponse,
   ReconciliationRun,
   RunReconciliationRequest,
@@ -368,6 +369,17 @@ export const billingApi = {
         cptCode: params.cptCode,
         siteCode: params.siteCode,
       },
+    );
+  },
+
+  /**
+   * Every line's drill-down for a run in ONE request. Backs "Expand all" —
+   * calling reconciliationLineDetail per line meant ~1,000 concurrent requests,
+   * which the browser queues six at a time until they hit the 30s timeout.
+   */
+  reconciliationAllDetail(params: { runId: number }) {
+    return get<ReconciliationAllDetailResponse>(
+      `/billing/reconciliation/${params.runId}/detail/all`,
     );
   },
 

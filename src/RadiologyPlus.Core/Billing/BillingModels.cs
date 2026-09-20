@@ -296,3 +296,15 @@ public sealed record ReconciliationDetailRow(
     string? PatientFirstName,
     DateOnly? PatientBirthDate,
     string? PatientGender);
+
+/// <summary>
+/// The (physician, cpt, site) natural key of one reconciliation line plus the
+/// Novarad report ids credited to it. Read for a whole run at once so the
+/// drill-down can be materialized in a single pass — see
+/// <see cref="IBillingRepository.GetReconciliationRunLineReportIdsAsync"/>.
+/// </summary>
+public sealed record ReconciliationLineReportIds(
+    long NovaradPhysicianId,
+    string CptCode,
+    string SiteCode,
+    IReadOnlyList<long> ReportIds);
