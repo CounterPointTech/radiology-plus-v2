@@ -319,14 +319,22 @@ public sealed class TechValidationRepository : ITechValidationRepository
         foreach (var s in studies)
         {
             await using var cmd = conn.CreateCommand();
+            // The NOT EXISTS guard keeps completed studies out of the projection. Without
+            // it the projector would re-insert them every pass: the source query in
+            // NovaradStudyReader gates on pacs.studies.status, which neither Finalize nor
+            // a merge writes, so a finished study still reads as "ready" from Novarad.
             cmd.CommandText = """
                 INSERT INTO tech_validation.ready_studies
                     (tenant_id, novarad_study_id, facility_id, study_uid, accession, study_date, modality,
                      custom_3, novarad_patient_id, patient_pid, patient_last_name, patient_first_name,
                      patient_birth_date, patient_gender, last_image_processed_date, study_description, projected_at)
-                VALUES (@t, @sid, @fac, @uid, @acc, @sdate, @mod,
-                        @c3, @pid, @ppid, @plast, @pfirst,
-                        @pbirth, @pgender, @lipd, @sdesc, NOW())
+                SELECT @t, @sid, @fac, @uid, @acc, @sdate, @mod,
+                       @c3, @pid, @ppid, @plast, @pfirst,
+                       @pbirth, @pgender, @lipd, @sdesc, NOW()
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM tech_validation.completed_studies c
+                    WHERE c.tenant_id = @t AND c.novarad_study_id = @sid
+                )
                 ON CONFLICT (tenant_id, novarad_study_id) DO UPDATE SET
                     facility_id              = EXCLUDED.facility_id,
                     study_uid                = EXCLUDED.study_uid,
@@ -385,6 +393,49 @@ public sealed class TechValidationRepository : ITechValidationRepository
             """;
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("cutoff", olderThan.UtcDateTime);
+        await cmd.ExecuteNonQueryAsync(cancellationToken);
+    }
+
+    private static readonly string[] CompletionReasons = ["validated", "merged_loser"];
+
+    public async Task MarkStudiesCompletedAsync(
+        Guid tenantId, IReadOnlyCollection<long> novaradStudyIds, string reason,
+        Guid? validationId = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(novaradStudyIds);
+        // Validate before touching the connection: the CHECK constraint would reject a bad
+        // reason anyway, but as an opaque 23514 from inside a finalize we would rather fail
+        // loudly at the call site with the offending value named.
+        if (Array.IndexOf(CompletionReasons, reason) < 0)
+        {
+            throw new ArgumentException(
+                $"Unknown completion reason '{reason}'. Expected one of: {string.Join(", ", CompletionReasons)}.",
+                nameof(reason));
+        }
+        if (novaradStudyIds.Count == 0) return;
+
+        await using var conn = (NpgsqlConnection)await _db.OpenAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        // DO NOTHING, not DO UPDATE: a study completed twice (e.g. finalized, then later
+        // merged away) keeps the reason and timestamp of the first completion, which is
+        // the one that actually took it off the worklist.
+        cmd.CommandText = """
+            INSERT INTO tech_validation.completed_studies
+                (tenant_id, novarad_study_id, reason, validation_id, completed_at)
+            SELECT @t, sid, @reason, @vid, NOW()
+            FROM UNNEST(@sids) AS sid
+            ON CONFLICT (tenant_id, novarad_study_id) DO NOTHING
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("reason", reason);
+        cmd.Parameters.Add(new NpgsqlParameter("vid", NpgsqlDbType.Uuid)
+        {
+            Value = validationId.HasValue ? validationId.Value : DBNull.Value,
+        });
+        cmd.Parameters.Add(new NpgsqlParameter("sids", NpgsqlDbType.Array | NpgsqlDbType.Bigint)
+        {
+            Value = novaradStudyIds.ToArray(),
+        });
         await cmd.ExecuteNonQueryAsync(cancellationToken);
     }
 

@@ -73,6 +73,26 @@ public interface ITechValidationRepository
     /// </summary>
     Task PruneStaleReadyStudiesAsync(
         Guid tenantId, DateTimeOffset olderThan, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Suppress studies from the worklist because their work is finished.
+    /// <para>
+    /// This is the ONLY way a study leaves the worklist for good. Novarad's
+    /// <c>pacs.studies.status</c> — the sole gate in the projector's source query — is
+    /// never written by Finalize or by a merge, so a completed study still qualifies as
+    /// "ready" at the source and the next projector pass would otherwise re-insert it.
+    /// </para>
+    /// <para>Reversible: delete the <c>tech_validation.completed_studies</c> row and the
+    /// study returns on the next pass. Idempotent — re-marking an already-completed
+    /// study is a no-op that preserves the original reason and timestamp.</para>
+    /// </summary>
+    /// <param name="reason">Must be <c>"validated"</c> or <c>"merged_loser"</c>.</param>
+    /// <param name="validationId">The validation that completed the study, for
+    /// <c>"validated"</c>. Null for a merge. Cascades, so reverting the validation
+    /// releases the suppression.</param>
+    Task MarkStudiesCompletedAsync(
+        Guid tenantId, IReadOnlyCollection<long> novaradStudyIds, string reason,
+        Guid? validationId = null, CancellationToken cancellationToken = default);
 }
 
 /// <summary>What changed on a wizard step submission. All fields optional — null means "no change".</summary>

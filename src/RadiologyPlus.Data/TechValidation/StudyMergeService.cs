@@ -69,7 +69,7 @@ public sealed class StudyMergeService : IStudyMergeService
             : request.Reason!;
 
         var results = new List<StudyMergeRowResult>(request.LosingStudyIds.Count);
-        var refreshIds = new List<long>(request.LosingStudyIds.Count + 1) { request.WinningStudyId };
+        var mergedLoserIds = new List<long>(request.LosingStudyIds.Count);
 
         foreach (var losingId in request.LosingStudyIds)
         {
@@ -121,7 +121,7 @@ public sealed class StudyMergeService : IStudyMergeService
                     cancellationToken: cancellationToken);
 
                 results.Add(new StudyMergeRowResult(losingId, Success: true, seriesRePointed, ErrorMessage: null));
-                refreshIds.Add(losingId);
+                mergedLoserIds.Add(losingId);
             }
             catch (Exception ex)
             {
@@ -134,23 +134,36 @@ public sealed class StudyMergeService : IStudyMergeService
             }
         }
 
-        // Refresh the worklist projection so losers drop off and the keeper's row
-        // reflects its new state. Best-effort: writes already committed.
+        // Take the merged losers off the worklist, and refresh the keeper so its row
+        // reflects the series it just absorbed. The keeper stays — it is still an
+        // unvalidated study that a tech has to work.
+        //
+        // Suppression is what actually removes a loser. Re-reading it and upserting
+        // cannot: the projector's source query gates on pacs.studies.status, which a
+        // merge never writes, so the loser still reads as "ready" from Novarad and the
+        // next pass would re-insert it. is_valid = FALSE does not help either — the
+        // reader deliberately ignores is_valid.
+        //
+        // Best-effort throughout: the Novarad writes have already committed, so a
+        // projection failure must not fail the merge. It self-heals on the next pass
+        // for the keeper; the losers are retried via the same path on any later merge.
         try
         {
-            var fresh = new List<ReadyStudy>(refreshIds.Count);
-            foreach (var id in refreshIds)
+            if (mergedLoserIds.Count > 0)
             {
-                var row = await _reader.ReadStudyByIdAsync(id, cancellationToken);
-                if (row is not null) fresh.Add(row);
+                await _repo.MarkStudiesCompletedAsync(
+                    tenant.TenantId, mergedLoserIds, reason: "merged_loser",
+                    validationId: null, cancellationToken);
             }
-            if (fresh.Count > 0)
-                await _repo.UpsertReadyStudiesAsync(tenant.TenantId, fresh, cancellationToken);
+
+            var keeper = await _reader.ReadStudyByIdAsync(request.WinningStudyId, cancellationToken);
+            if (keeper is not null)
+                await _repo.UpsertReadyStudiesAsync(tenant.TenantId, new[] { keeper }, cancellationToken);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex,
-                "Post-merge projection refresh failed for tenant {Tenant}; worklist will self-heal on the next projector pass.",
+                "Post-merge projection update failed for tenant {Tenant}; merged losers may linger on the worklist until the next merge or a manual completed_studies insert.",
                 tenant.TenantId);
         }
 

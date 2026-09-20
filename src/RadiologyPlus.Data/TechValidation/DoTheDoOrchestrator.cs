@@ -116,6 +116,28 @@ public sealed class DoTheDoOrchestrator : IDoTheDoOrchestrator
 
         await _repo.MarkCompletedAsync(tenant.TenantId, validationId, cancellationToken);
 
+        // Take the validated study off the worklist. Marking the VALIDATION completed is
+        // not enough on its own: the projector's source query gates on
+        // pacs.studies.status, which Finalize never writes, so the study still reads as
+        // "ready" from Novarad and the next pass would keep it on the list forever.
+        //
+        // Best-effort — every Novarad write has already committed and the validation is
+        // recorded, so failing here must not turn a successful finalize into a failure.
+        // The study simply stays on the worklist until it is finalized again.
+        try
+        {
+            await _repo.MarkStudiesCompletedAsync(
+                tenant.TenantId, new[] { validation.NovaradStudyId }, reason: "validated",
+                validationId: validationId, cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex,
+                "Study {Study} was validated (validation {Validation}) but could not be marked complete; " +
+                "it will remain on the worklist.",
+                validation.NovaradStudyId, validationId);
+        }
+
         // A patient correction/reassignment changes what the worklist projection shows
         // (demographics, or which patient the study belongs to). Re-read the one study
         // from Novarad and refresh the snapshot so the UI is immediately consistent
