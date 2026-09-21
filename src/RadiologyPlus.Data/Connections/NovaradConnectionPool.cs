@@ -78,7 +78,9 @@ public sealed class NovaradConnectionPool : INovaradDbContext, IAsyncDisposable
             ApplicationName = "RadiologyPlus",
             SslMode = useSsl ? SslMode.Require : SslMode.Disable,
             Timeout = 15,
-            CommandTimeout = 60,
+            // Reconciliation over a multi-month window on a live Novarad legitimately
+            // runs past a minute; the callers that allow that also raise their HTTP timeout.
+            CommandTimeout = 180,
         };
 
         _logger.LogInformation("Built Novarad data source for tenant {TenantId} -> {Host}/{Db}", tenantId, host, database);

@@ -351,8 +351,13 @@ export const billingApi = {
     return res.data;
   },
 
-  runReconciliation(req: RunReconciliationRequest) {
-    return post<ReconciliationRun>("/billing/reconciliation/run", req);
+  // Reads every signed report in the window from Novarad; a multi-month window on
+  // a live system runs well past the 30 s default, so allow three minutes.
+  async runReconciliation(req: RunReconciliationRequest) {
+    const res = await apiClient.post<ReconciliationRun>("/billing/reconciliation/run", req, {
+      timeout: 180_000,
+    });
+    return res.data;
   },
 
   reconciliationLineDetail(params: {
@@ -371,8 +376,13 @@ export const billingApi = {
     );
   },
 
-  unmappedCodes(params: { from?: string; to?: string; site?: string }) {
-    return get<UnmappedCodesResponse>("/billing/reconciliation/unmapped", params);
+  // Same Novarad read as a reconciliation run, plus suggestion matching; same allowance.
+  async unmappedCodes(params: { from?: string; to?: string; site?: string }) {
+    const res = await apiClient.get<UnmappedCodesResponse>("/billing/reconciliation/unmapped", {
+      params,
+      timeout: 180_000,
+    });
+    return res.data;
   },
 
   exportReconciliation(
