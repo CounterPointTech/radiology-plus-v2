@@ -68,12 +68,21 @@ internal sealed class MigrationRunner
                 cmd.CommandTimeout = 300;
                 await cmd.ExecuteNonQueryAsync();
 
-                await using var update = conn.CreateCommand();
-                update.Transaction = tx;
-                update.CommandText = "UPDATE core.schema_migrations SET checksum = @c WHERE version = @v";
-                update.Parameters.AddWithValue("c", checksum);
-                update.Parameters.AddWithValue("v", version);
-                await update.ExecuteNonQueryAsync();
+                // Record the version here, in the same transaction as the DDL. Older
+                // migration files insert their own ledger row (0001-0022), so this was
+                // once a plain UPDATE of the checksum; a file that did not insert itself
+                // was never recorded and re-ran on every deploy. The upsert makes the
+                // runner the single owner of the ledger and keeps the old files working.
+                await using var record = conn.CreateCommand();
+                record.Transaction = tx;
+                record.CommandText = """
+                    INSERT INTO core.schema_migrations (version, checksum)
+                    VALUES (@v, @c)
+                    ON CONFLICT (version) DO UPDATE SET checksum = EXCLUDED.checksum
+                    """;
+                record.Parameters.AddWithValue("c", checksum);
+                record.Parameters.AddWithValue("v", version);
+                await record.ExecuteNonQueryAsync();
 
                 await tx.CommitAsync();
                 Log.Information("  ✓ {Version} applied", version);
