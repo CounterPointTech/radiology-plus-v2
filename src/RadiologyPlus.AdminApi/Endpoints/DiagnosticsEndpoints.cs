@@ -10,7 +10,8 @@ public static class DiagnosticsEndpoints
         {
             Product = "Radiology Plus Admin",
             Version = typeof(DiagnosticsEndpoints).Assembly.GetName().Version?.ToString() ?? "unknown",
-            Time = DateTimeOffset.UtcNow,
+            // Local time, like the rest of the app; only the audit log is UTC.
+            Time = DateTimeOffset.Now,
         }));
 
         return app;

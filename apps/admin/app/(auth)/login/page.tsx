@@ -50,7 +50,15 @@ function LoginForm() {
   const params = useSearchParams();
   const { login, logout, user, isAuthenticated, isHydrated } = useAuth();
 
-  const [facility, setFacility] = useState("AHC");
+  // Start empty; remember the last facility this browser signed in with. "AHC" was a
+  // development default that leaked onto the customer-facing site.
+  const [facility, setFacility] = useState(() => {
+    try {
+      return window.localStorage.getItem("radplus.lastFacility") ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -76,6 +84,11 @@ function LoginForm() {
     setSubmitting(true);
     try {
       await login({ facility, username, password });
+      try {
+        window.localStorage.setItem("radplus.lastFacility", facility.trim());
+      } catch {
+        // Private mode or blocked storage: remembering is a convenience, not a requirement.
+      }
       router.replace(next as never);
     } catch (err) {
       const ax = err as AxiosError<{ message?: string }>;
