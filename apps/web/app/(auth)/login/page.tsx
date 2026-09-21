@@ -163,7 +163,7 @@ function LoginForm() {
                   autoComplete="organization"
                   value={facility}
                   onChange={(e) => setFacility(e.target.value)}
-                  placeholder="AHC"
+                  placeholder="Your facility code"
                   required
                 />
               </div>
