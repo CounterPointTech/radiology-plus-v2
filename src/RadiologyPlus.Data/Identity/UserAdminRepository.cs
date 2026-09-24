@@ -22,7 +22,8 @@ public sealed class UserAdminRepository : IUserAdminRepository
                u.last_login_at, u.created_at,
                COALESCE(ARRAY_AGG(uf.facility_id) FILTER (WHERE uf.facility_id IS NOT NULL), ARRAY[]::int[]) AS facility_ids,
                (SELECT COUNT(*)::int FROM identity.refresh_tokens rt
-                WHERE rt.user_id = u.user_id AND rt.revoked_at IS NULL AND rt.expires_at > NOW()) AS active_sessions
+                WHERE rt.user_id = u.user_id AND rt.revoked_at IS NULL AND rt.expires_at > NOW()) AS active_sessions,
+               u.role_pinned
         FROM identity.users u
         LEFT JOIN identity.user_facilities uf ON uf.user_id = u.user_id
         """;
@@ -78,7 +79,8 @@ public sealed class UserAdminRepository : IUserAdminRepository
         LastLoginAt: reader.IsDBNull(7) ? null : new DateTimeOffset(reader.GetDateTime(7), TimeSpan.Zero),
         CreatedAt: new DateTimeOffset(reader.GetDateTime(8), TimeSpan.Zero),
         FacilityIds: (int[])reader.GetValue(9),
-        ActiveSessionCount: reader.GetInt32(10));
+        ActiveSessionCount: reader.GetInt32(10),
+        RolePinned: reader.GetBoolean(11));
 
     // -- Create / update ---------------------------------------------------------
 
@@ -152,6 +154,25 @@ public sealed class UserAdminRepository : IUserAdminRepository
         cmd.Parameters.AddWithValue("t", tenantId);
         cmd.Parameters.AddWithValue("id", userId);
         cmd.Parameters.AddWithValue("active", isActive);
+        if (await cmd.ExecuteNonQueryAsync(cancellationToken) == 0)
+            throw new KeyNotFoundException($"User {userId} not found for tenant {tenantId}.");
+
+        return (await GetCoreAsync(conn, tenantId, userId, cancellationToken))!;
+    }
+
+    public async Task<UserAdminSummary> SetRoleAsync(Guid tenantId, Guid userId, Role role, bool pinned, CancellationToken cancellationToken = default)
+    {
+        await using var conn = (NpgsqlConnection)await _db.OpenUnscopedAsync(cancellationToken);
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = """
+            UPDATE identity.users
+            SET role = @r, role_pinned = @pinned, updated_at = NOW()
+            WHERE tenant_id = @t AND user_id = @id
+            """;
+        cmd.Parameters.AddWithValue("t", tenantId);
+        cmd.Parameters.AddWithValue("id", userId);
+        cmd.Parameters.AddWithValue("r", (short)role);
+        cmd.Parameters.AddWithValue("pinned", pinned);
         if (await cmd.ExecuteNonQueryAsync(cancellationToken) == 0)
             throw new KeyNotFoundException($"User {userId} not found for tenant {tenantId}.");
 

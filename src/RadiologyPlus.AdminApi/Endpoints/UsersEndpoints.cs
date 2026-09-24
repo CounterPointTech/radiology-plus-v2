@@ -8,7 +8,7 @@ namespace RadiologyPlus.AdminApi.Endpoints;
 /// <summary>
 /// Users console surface (NRS/Admin, enforced per-handler; every mutation audited).
 /// Local users are fully manageable here; federated Novarad users only allow
-/// activate/deactivate (their profile is Novarad's). Guardrails: NRS accounts can
+/// activate/deactivate and a pinned role (their profile is Novarad's). Guardrails: NRS accounts can
 /// only be managed by NRS, and nobody can deactivate themselves or change their
 /// own role.
 /// </summary>
@@ -26,6 +26,7 @@ public static class UsersEndpoints
         group.MapPost("/", CreateAsync).WithName("UsersCreate");
         group.MapPut("/{userId:guid}", UpdateAsync).WithName("UsersUpdate");
         group.MapPatch("/{userId:guid}/active", SetActiveAsync).WithName("UsersSetActive");
+        group.MapPatch("/{userId:guid}/role", SetRoleAsync).WithName("UsersSetRole");
         group.MapPost("/{userId:guid}/password", SetPasswordAsync).WithName("UsersSetPassword");
         group.MapGet("/{userId:guid}/sessions", ListSessionsAsync).WithName("UsersSessions");
         group.MapPost("/{userId:guid}/sessions/revoke", RevokeSessionsAsync).WithName("UsersRevokeSessions");
@@ -159,6 +160,43 @@ public static class UsersEndpoints
         return Results.Ok(ToDto(updated));
     }
 
+    /// <summary>
+    /// Sets a user's role. For a Novarad user the role is pinned so sign-in stops
+    /// re-deriving it from Novarad; FollowNovarad=true unpins it instead (the role
+    /// then re-syncs at their next sign-in).
+    /// </summary>
+    private static async Task<IResult> SetRoleAsync(
+        Guid userId,
+        UserRoleRequest req,
+        ICurrentUser currentUser,
+        IUserAdminRepository repo,
+        IAccessAuditWriter audit,
+        HttpContext http,
+        CancellationToken ct)
+    {
+        var user = currentUser.Require();
+        if (!user.Role.CanAccessAdmin()) return Results.Forbid();
+        if (req is null) return Results.BadRequest(new { error = "Request body is required." });
+        if (!TryParseRole(req.Role, out var role))
+            return Results.BadRequest(new { error = "role must be one of: NRS, Admin, Tech, Radiologist." });
+
+        var target = await repo.GetAsync(user.TenantId, userId, ct);
+        if (target is null) return Results.NotFound(new { error = "User not found." });
+        if (!MayManage(user, target)) return Results.Forbid();
+        if (role == Role.NRS && user.Role != Role.NRS) return Results.Forbid();
+        if (userId == user.UserId && role != target.Role)
+            return Results.BadRequest(new { error = "You can't change your own role." });
+
+        // Pinning only means something for a federated account; a local role is always ours.
+        var pinned = !target.IsLocal && !(req.FollowNovarad ?? false);
+        var updated = await repo.SetRoleAsync(user.TenantId, userId, role, pinned, ct);
+
+        await audit.WriteSuccessAsync(user.TenantId, user, AccessAction.Update,
+            $"identity.users user_id={userId}: role->{updated.Role}" + (updated.IsLocal ? "" : pinned ? " (pinned)" : " (follows Novarad)"),
+            http, ct);
+        return Results.Ok(ToDto(updated));
+    }
+
     private static async Task<IResult> SetPasswordAsync(
         Guid userId,
         UserPasswordRequest req,
@@ -239,7 +277,7 @@ public static class UsersEndpoints
 
     private static AdminUserDto ToDto(UserAdminSummary u) => new(
         u.UserId, u.Username, u.DisplayName, u.Email, u.Role.ToString(), u.IsLocal,
-        u.IsActive, u.LastLoginAt, u.CreatedAt, u.FacilityIds, u.ActiveSessionCount);
+        u.IsActive, u.LastLoginAt, u.CreatedAt, u.FacilityIds, u.ActiveSessionCount, u.RolePinned);
 }
 
 public sealed record UserCreateRequest(
@@ -258,6 +296,8 @@ public sealed record UserUpdateRequest(
 
 public sealed record UserActiveRequest(bool IsActive);
 
+public sealed record UserRoleRequest(string Role, bool? FollowNovarad);
+
 public sealed record UserPasswordRequest(string Password);
 
 public sealed record AdminUserDto(
@@ -271,4 +311,5 @@ public sealed record AdminUserDto(
     DateTimeOffset? LastLoginAt,
     DateTimeOffset CreatedAt,
     IReadOnlyList<int> FacilityIds,
-    int ActiveSessionCount);
+    int ActiveSessionCount,
+    bool RolePinned);

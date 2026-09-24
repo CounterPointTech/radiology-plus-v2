@@ -40,6 +40,7 @@ import type {
   ScriptVersionInfo,
   TemplatePreviewResult,
   TenantInfo,
+  Role,
   UserCreateRequest,
   UserSession,
   UserUpdateRequest,
@@ -75,6 +76,14 @@ export const usersApi = {
     const res = await apiClient.patch<AdminUser>(
       `/users/${encodeURIComponent(userId)}/active`,
       { isActive },
+    );
+    return res.data;
+  },
+  /** Set a role. For a Novarad user it is pinned; followNovarad=true unpins it instead. */
+  async setRole(userId: string, role: Role, followNovarad = false) {
+    const res = await apiClient.patch<AdminUser>(
+      `/users/${encodeURIComponent(userId)}/role`,
+      { role, followNovarad },
     );
     return res.data;
   },

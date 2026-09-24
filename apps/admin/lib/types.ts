@@ -215,6 +215,8 @@ export interface AdminUser {
   createdAt: string;
   facilityIds: number[];
   activeSessionCount: number;
+  /** TRUE when an administrator set the role; Novarad sign-in then leaves it alone. */
+  rolePinned: boolean;
 }
 
 export interface UserCreateRequest {

@@ -72,6 +72,19 @@ export default function UsersPage() {
     },
     onError: (err) => setNote(errText(err, "Couldn't update the user.")),
   });
+  const roleMut = useMutation({
+    mutationFn: (v: { id: string; role: Role; followNovarad: boolean }) =>
+      usersApi.setRole(v.id, v.role, v.followNovarad),
+    onSuccess: (u) => {
+      setNote(
+        u.rolePinned
+          ? `${u.username} is now ${u.role}. The role is pinned, so Novarad sign-in keeps it.`
+          : `${u.username} follows their Novarad role again from their next sign-in.`,
+      );
+      void invalidate();
+    },
+    onError: (err) => setNote(errText(err, "Couldn't change the role.")),
+  });
   const revokeMut = useMutation({
     mutationFn: (id: string) => usersApi.revokeSessions(id),
     onSuccess: (r) => {
@@ -104,7 +117,8 @@ export default function UsersPage() {
           </h1>
           <p className="text-sm text-[color:var(--color-muted-fg)] mt-1 max-w-2xl">
             Local accounts are managed here; Novarad accounts appear automatically at first
-            sign-in and keep their Novarad profile.
+            sign-in and keep their Novarad profile. A Novarad account's role follows its
+            Novarad role unless you pin one here.
           </p>
         </div>
         <Button size="sm" onClick={() => setEditing(editing === "new" ? null : "new")}>
@@ -151,9 +165,13 @@ export default function UsersPage() {
                 facilityById={facilityById}
                 busy={
                   (toggleMut.isPending && toggleMut.variables?.id === u.userId) ||
+                  (roleMut.isPending && roleMut.variables?.id === u.userId) ||
                   (revokeMut.isPending && revokeMut.variables === u.userId)
                 }
                 onToggle={() => toggleMut.mutate({ id: u.userId, isActive: !u.isActive })}
+                onSetRole={(role, followNovarad) =>
+                  roleMut.mutate({ id: u.userId, role, followNovarad })
+                }
                 onRevoke={() => revokeMut.mutate(u.userId)}
                 onEdit={() => setEditing(editing === u.userId ? null : u.userId)}
               />
@@ -201,6 +219,7 @@ function UserRow({
   onToggle,
   onRevoke,
   onEdit,
+  onSetRole,
 }: {
   user: AdminUser;
   meId: string;
@@ -210,9 +229,14 @@ function UserRow({
   onToggle: () => void;
   onRevoke: () => void;
   onEdit: () => void;
+  onSetRole: (role: Role, followNovarad: boolean) => void;
 }) {
   const mayManage = isNrs(meRole) || u.role !== "NRS";
   const isSelf = u.userId === meId;
+  // Novarad accounts have no Edit form (Novarad owns the profile), so the role is set
+  // right on the row. "Follow Novarad" unpins it; the value re-syncs at next sign-in.
+  const FOLLOW = "__follow__";
+  const roleChoices = ROLES.filter((r) => r !== "NRS" || isNrs(meRole));
   const facilityNames = u.facilityIds
     .map((id) => facilityById.get(id)?.code ?? `#${id}`)
     .join(", ");
@@ -227,6 +251,11 @@ function UserRow({
           </span>
           <Badge variant="accent">{u.role}</Badge>
           <Badge variant="neutral">{u.isLocal ? "local" : "Novarad"}</Badge>
+          {!u.isLocal && u.rolePinned ? (
+            <Badge variant="neutral" title="Set by an administrator; Novarad sign-in keeps it">
+              pinned
+            </Badge>
+          ) : null}
           {u.isActive ? null : <Badge variant="caution">deactivated</Badge>}
           {isSelf ? <Badge variant="neutral">you</Badge> : null}
         </div>
@@ -257,6 +286,27 @@ function UserRow({
             <Pencil className="size-3.5" />
             Edit
           </Button>
+        ) : null}
+        {!u.isLocal && mayManage && !isSelf ? (
+          <select
+            aria-label={`Role for ${u.username}`}
+            title="Pin a role, or let it follow Novarad"
+            className={`${inputCls} h-8 w-auto py-0 text-xs`}
+            value={u.rolePinned ? u.role : FOLLOW}
+            disabled={busy}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === FOLLOW) onSetRole(u.role, true);
+              else onSetRole(v as Role, false);
+            }}
+          >
+            <option value={FOLLOW}>Follow Novarad ({u.role})</option>
+            {roleChoices.map((r) => (
+              <option key={r} value={r}>
+                Pin: {r}
+              </option>
+            ))}
+          </select>
         ) : null}
         {mayManage && !isSelf ? (
           <Button

@@ -75,7 +75,8 @@ public sealed class IdentityRepository : IIdentityRepository
                 ON CONFLICT (tenant_id, username) DO UPDATE SET
                     display_name = EXCLUDED.display_name,
                     email = EXCLUDED.email,
-                    role = EXCLUDED.role,
+                    -- An administrator-pinned role is ours, not Novarad's (migration 0026).
+                    role = CASE WHEN identity.users.role_pinned THEN identity.users.role ELSE EXCLUDED.role END,
                     -- is_active is admin-controlled: a deactivated federated user must
                     -- STAY deactivated — a successful Novarad login must not unblock them.
                     updated_at = NOW()

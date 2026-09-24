@@ -18,7 +18,9 @@ public sealed record UserAdminSummary(
     DateTimeOffset? LastLoginAt,
     DateTimeOffset CreatedAt,
     IReadOnlyList<int> FacilityIds,
-    int ActiveSessionCount);
+    int ActiveSessionCount,
+    /// <summary>TRUE when an administrator set the role; federated sign-in then leaves it alone.</summary>
+    bool RolePinned);
 
 /// <summary>Create-shape for a LOCAL user. PasswordHash is already bcrypt-hashed by the caller.</summary>
 public sealed record LocalUserCreate(
@@ -61,6 +63,13 @@ public interface IUserAdminRepository
 
     /// <summary>Works for local AND federated users. Throws KeyNotFoundException when missing.</summary>
     Task<UserAdminSummary> SetActiveAsync(Guid tenantId, Guid userId, bool isActive, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Works for local AND federated users. <paramref name="pinned"/> TRUE makes the role
+    /// survive federated sign-in; FALSE lets it follow Novarad again from the next sign-in.
+    /// Throws KeyNotFoundException when missing.
+    /// </summary>
+    Task<UserAdminSummary> SetRoleAsync(Guid tenantId, Guid userId, Role role, bool pinned, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Local users only (hash already bcrypt). Throws KeyNotFoundException / InvalidOperationException
