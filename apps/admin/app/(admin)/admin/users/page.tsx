@@ -117,7 +117,7 @@ export default function UsersPage() {
           </h1>
           <p className="text-sm text-[color:var(--color-muted-fg)] mt-1 max-w-2xl">
             Local accounts are managed here; Novarad accounts appear automatically at first
-            sign-in and keep their Novarad profile. A Novarad account's role follows its
+            sign-in and keep their Novarad profile. A Novarad account&apos;s role follows its
             Novarad role unless you pin one here.
           </p>
         </div>
